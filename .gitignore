@@ -1,0 +1,16 @@
+# Build output, including C++ generated from the game executable
+build/
+cmake-build-*/
+
+# Anything taken from the game discs
+extracted/
+Games/
+*.bin
+*.cue
+*.iso
+
+# Reference checkouts of other projects
+_refs/
+
+.idea/
+__pycache__/

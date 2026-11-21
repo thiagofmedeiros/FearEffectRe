@@ -1,0 +1,95 @@
+cmake_minimum_required(VERSION 3.25)
+project(FearEffectRe CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# The game's code is recompiled from your own disc at build time. Nothing
+# derived from the game is stored in this repository.
+set(FE_DISC_IMAGE "" CACHE FILEPATH "Fear Effect (USA) disc image (.cue/.bin) used to generate the recompiled code")
+set(FE_RECOMP_SHARDS 16 CACHE STRING "Number of generated translation units")
+
+add_library(fe_core STATIC
+    src/core/disc/DiscImage.cpp
+    src/core/psx/Machine.cpp
+    src/core/psx/Bios.cpp
+    src/core/psx/Cdrom.cpp
+    src/core/psx/Gpu.cpp
+    src/core/psx/Gte.cpp
+    src/core/psx/Mdec.cpp
+    src/core/psx/Spu.cpp
+    src/core/psx/Hardware.cpp
+)
+target_include_directories(fe_core PUBLIC src/core)
+if(MSVC)
+    target_compile_options(fe_core PRIVATE /W4)
+else()
+    target_compile_options(fe_core PRIVATE -Wall -Wextra)
+endif()
+
+if(FE_DISC_IMAGE)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    set(FE_GEN_DIR ${CMAKE_BINARY_DIR}/gen)
+    set(FE_GEN_SOURCES ${FE_GEN_DIR}/fe_exe_table.cpp)
+    math(EXPR last_shard "${FE_RECOMP_SHARDS} - 1")
+    foreach(i RANGE ${last_shard})
+        if(i LESS 10)
+            set(i "0${i}")
+        endif()
+        list(APPEND FE_GEN_SOURCES ${FE_GEN_DIR}/fe_exe_${i}.cpp)
+    endforeach()
+    file(GLOB FE_RECOMP_SCRIPTS CONFIGURE_DEPENDS tools/recomp/*.py tools/psxdisc.py)
+    add_custom_command(
+        OUTPUT ${FE_GEN_DIR}/recomp.stamp
+        BYPRODUCTS ${FE_GEN_SOURCES} ${FE_GEN_DIR}/fe_exe_decl.h
+        COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_SOURCE_DIR}/tools/recomp/recomp.py
+                --disc "${FE_DISC_IMAGE}" --out ${FE_GEN_DIR} --shards ${FE_RECOMP_SHARDS}
+        COMMAND ${CMAKE_COMMAND} -E touch ${FE_GEN_DIR}/recomp.stamp
+        DEPENDS ${FE_RECOMP_SCRIPTS} "${FE_DISC_IMAGE}"
+        COMMENT "Recompiling the game executable to C++"
+        VERBATIM
+    )
+    add_custom_target(fe_recomp_gen DEPENDS ${FE_GEN_DIR}/recomp.stamp)
+    add_library(fe_recomp STATIC ${FE_GEN_SOURCES})
+    add_dependencies(fe_recomp fe_recomp_gen)
+    target_link_libraries(fe_recomp PUBLIC fe_core)
+    target_include_directories(fe_recomp PRIVATE ${FE_GEN_DIR})
+    if(MSVC)
+        target_compile_options(fe_recomp PRIVATE /bigobj /w)
+    else()
+        target_compile_options(fe_recomp PRIVATE -Wno-unused-label -Wno-unused-variable)
+    endif()
+    set(FE_RECOMP_LIB fe_recomp)
+    set(FE_HAVE_RECOMP 1)
+else()
+    message(WARNING "FE_DISC_IMAGE is not set: building the interpreter only.")
+    set(FE_RECOMP_LIB "")
+    set(FE_HAVE_RECOMP 0)
+endif()
+
+add_executable(FearEffectRe src/app/main.cpp)
+if(WIN32)
+    target_sources(FearEffectRe PRIVATE src/app/Window.cpp)
+    target_link_libraries(FearEffectRe PRIVATE user32 gdi32 winmm)
+    target_compile_definitions(FearEffectRe PRIVATE FE_HAVE_WINDOW=1)
+endif()
+target_link_libraries(FearEffectRe PRIVATE fe_core ${FE_RECOMP_LIB})
+target_compile_definitions(FearEffectRe PRIVATE FE_HAVE_RECOMP=${FE_HAVE_RECOMP})
+
+if(FE_HAVE_RECOMP)
+    add_executable(fe_difftest tests/difftest.cpp)
+    target_link_libraries(fe_difftest PRIVATE fe_core fe_recomp)
+    enable_testing()
+    add_test(NAME recomp_matches_interpreter COMMAND fe_difftest "${FE_DISC_IMAGE}")
+endif()
+
+if(MINGW)
+    foreach(t FearEffectRe fe_difftest)
+        if(TARGET ${t})
+            target_link_options(${t} PRIVATE -static-libgcc -static-libstdc++)
+        endif()
+    endforeach()
+endif()
