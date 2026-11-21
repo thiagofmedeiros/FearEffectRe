@@ -72,8 +72,8 @@ endif()
 
 add_executable(FearEffectRe src/app/main.cpp)
 if(WIN32)
-    target_sources(FearEffectRe PRIVATE src/app/Window.cpp)
-    target_link_libraries(FearEffectRe PRIVATE user32 gdi32 winmm)
+    target_sources(FearEffectRe PRIVATE src/app/Window.cpp src/app/Launcher.cpp)
+    target_link_libraries(FearEffectRe PRIVATE user32 gdi32 winmm comdlg32)
     target_compile_definitions(FearEffectRe PRIVATE FE_HAVE_WINDOW=1)
 endif()
 target_link_libraries(FearEffectRe PRIVATE fe_core ${FE_RECOMP_LIB})
@@ -87,6 +87,12 @@ if(FE_HAVE_RECOMP)
 endif()
 
 if(MINGW)
+    # so the program starts by double-click, without the compiler on PATH
+    get_filename_component(FE_COMPILER_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    if(EXISTS "${FE_COMPILER_DIR}/libwinpthread-1.dll")
+        add_custom_command(TARGET FearEffectRe POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                           "${FE_COMPILER_DIR}/libwinpthread-1.dll" $<TARGET_FILE_DIR:FearEffectRe>)
+    endif()
     foreach(t FearEffectRe fe_difftest)
         if(TARGET ${t})
             target_link_options(${t} PRIVATE -static-libgcc -static-libstdc++)

@@ -1,5 +1,7 @@
 #include "Window.h"
 
+#include "Launcher.h"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -62,7 +64,7 @@ bool down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
 
 }  // namespace
 
-Window::Window() : impl_(new Impl) {
+Window::Window(int width, int height, bool fullscreen, int display) : impl_(new Impl) {
     WNDCLASSW wc{};
     wc.lpfnWndProc = wndProc;
     wc.hInstance = GetModuleHandleW(nullptr);
@@ -70,10 +72,23 @@ Window::Window() : impl_(new Impl) {
     wc.hCursor = LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_ARROW));
     wc.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RegisterClassW(&wc);
-    RECT r{0, 0, 960, 720};
-    AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
-    impl_->hwnd = CreateWindowW(wc.lpszClassName, L"FearEffectRe", WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT,
-                                CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr, wc.hInstance, nullptr);
+    std::vector<Display> displays = listDisplays();
+    const Display& target = displays[display >= 0 && display < static_cast<int>(displays.size()) ? display : 0];
+    int screenW = target.width, screenH = target.height;
+    // a window as large as the screen cannot show its frame: go borderless instead
+    if (width >= screenW && height >= screenH) fullscreen = true;
+    if (fullscreen) {
+        impl_->hwnd = CreateWindowW(wc.lpszClassName, L"FearEffectRe", WS_POPUP | WS_VISIBLE, target.x, target.y, screenW, screenH,
+                                    nullptr, nullptr, wc.hInstance, nullptr);
+    } else {
+        RECT r{0, 0, width, height};
+        AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+        int w = r.right - r.left, h = r.bottom - r.top;
+        // centred; a window larger than the screen starts at its top-left corner
+        int x = target.x + std::max(0, (screenW - w) / 2), y = target.y + std::max(0, (screenH - h) / 2);
+        impl_->hwnd = CreateWindowW(wc.lpszClassName, L"FearEffectRe", WS_OVERLAPPEDWINDOW | WS_VISIBLE, x, y, w, h,
+                                    nullptr, nullptr, wc.hInstance, nullptr);
+    }
     SetWindowLongPtrW(impl_->hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(impl_));
     WAVEFORMATEX fmt{};
     fmt.wFormatTag = WAVE_FORMAT_PCM;

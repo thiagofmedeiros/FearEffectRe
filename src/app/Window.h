@@ -10,7 +10,10 @@ namespace app {
 class Window {
 public:
     struct Impl;
-    Window();
+    // Client area of width x height pixels, or a borderless window covering
+    // the screen. The picture is scaled to the largest 4:3 area that fits.
+    // `display` is an index into app::listDisplays().
+    Window(int width, int height, bool fullscreen, int display = 0);
     ~Window();
 
     // Presents one frame and waits for the next frame time. Returns false

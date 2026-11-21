@@ -51,11 +51,19 @@ Without `FE_DISC_IMAGE` only the interpreter is built. With MinGW, keep the comp
 
 ## Running
 
+Start `build/FearEffectRe.exe` without arguments (double-click works) for the launcher:
+choose the disc 1 image, a resolution (Original 640x480, 720p, 1080p, 1440p or 4K) and
+fullscreen, then press Play. The choices are remembered in `FearEffectRe.ini` next to the
+program. The resolution is the size of the output: the game is still drawn at the
+console's resolution and scaled to the largest 4:3 picture that fits. A size as large as
+the screen is shown borderless. With more than one monitor connected the launcher also
+asks which display to use (`--display N` on the command line, 1 is the primary).
+
 ```sh
-build/FearEffectRe "D:/path/Fear Effect (USA) (Disc 1).cue"
+build/FearEffectRe "D:/path/Fear Effect (USA) (Disc 1).cue" --resolution 1080p [--fullscreen] [--display 2]
 ```
 
-Opens a window and plays. Keys: arrows or WASD move, E/Enter is cross, Q/Esc circle,
+starts the game directly. Keys: arrows or WASD move, E/Enter is cross, Q/Esc circle,
 F square, Space triangle, Tab L1, R R1, 1 L2, 4 R2, P start, Backspace select. F1
 fast-forwards, F2 to F5 insert disc 1 to 4. An Xbox controller (XInput) works too: A is
 cross, B circle, X square, Y triangle, LB/RB are L1/R1, LT/RT are L2/R2, Start and Back are

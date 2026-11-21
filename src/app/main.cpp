@@ -17,7 +17,12 @@
 #include "psx/Spu.h"
 #include "psx/Machine.h"
 #if FE_HAVE_WINDOW
+#include "Launcher.h"
 #include "Window.h"
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #endif
 
 #if FE_HAVE_RECOMP
@@ -106,15 +111,36 @@ int usage() {
                  "usage: FearEffectRe <disc.cue> [--frames N] [--interpreter] [--input script] [--shots dir] [--dump png]\n"
                  "Without --frames the game runs in a window. Keys: arrows/WASD move, E/Enter cross, Q/Esc circle,\n"
                  "F square, Space triangle, Tab L1, R R1, 1 L2, 4 R2, P start, Backspace select, F1 fast-forward,\n"
-                 "F2-F5 insert disc 1-4. Saves go to ./saves (--saves dir, or --saves none for no memory card).\n");
+                 "F2-F5 insert disc 1-4. Saves go to ./saves (--saves dir, or --saves none for no memory card).\n"
+                 "--resolution original|720p|1080p|1440p|4k and --fullscreen set the output size,\n"
+                 "--display N picks the monitor (1 = primary).\n"
+                 "Run without arguments for the launcher.\n");
     return 2;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
+    int resolution = 1;  // index into app::kResolutions
+    bool fullscreen = false, viaLauncher = false;
+    int display = 0;  // index into app::listDisplays()
+    std::string discPath;
+#if FE_HAVE_WINDOW
+    SetProcessDPIAware();  // window sizes are real pixels
+    if (argc < 2) {
+        app::LaunchSettings launch;
+        if (!app::runLauncher(launch)) return 0;
+        discPath = launch.discPath;
+        resolution = launch.resolution;
+        fullscreen = launch.fullscreen;
+        display = launch.display;
+        viaLauncher = true;
+        FreeConsole();  // started by double-click: no need for the console window
+    }
+#else
     if (argc < 2) return usage();
-    std::string discPath = argv[1];
+#endif
+    if (!viaLauncher) discPath = argv[1];
     unsigned frames = 0;  // 0 = play in a window until it is closed
     size_t maxLog = 80;
     bool interpreterOnly = false, logBios = false;
@@ -132,6 +158,15 @@ int main(int argc, char** argv) {
         else if (a == "--max-log" && i + 1 < argc) maxLog = static_cast<size_t>(std::atoi(argv[++i]));
         else if (a == "--interpreter") interpreterOnly = true;
         else if (a == "--log-bios") logBios = true;
+        else if (a == "--fullscreen") fullscreen = true;
+        else if (a == "--display" && i + 1 < argc) display = std::atoi(argv[++i]) - 1;
+#if FE_HAVE_WINDOW
+        else if (a == "--resolution" && i + 1 < argc) {
+            const app::Resolution* r = app::findResolution(argv[++i]);
+            if (!r) return usage();
+            resolution = static_cast<int>(r - app::kResolutions);
+        }
+#endif
         else if (a == "--swap" && i + 1 < argc) swapScript = argv[++i];
         else if (a == "--saves" && i + 1 < argc) savesDir = argv[++i];
         else if (a == "--wav" && i + 1 < argc) wavPath = argv[++i];
@@ -210,7 +245,9 @@ int main(int argc, char** argv) {
         }
 #if FE_HAVE_WINDOW
         std::unique_ptr<app::Window> window;
-        if (frames == 0) window = std::make_unique<app::Window>();
+        if (frames == 0)
+            window = std::make_unique<app::Window>(app::kResolutions[resolution].width, app::kResolutions[resolution].height,
+                                                   fullscreen, display);
 #else
         if (frames == 0) frames = 300;
 #endif
@@ -335,6 +372,9 @@ int main(int argc, char** argv) {
             std::printf("  %08x  %llu\n", io[i].second, static_cast<unsigned long long>(io[i].first));
     } catch (const std::exception& e) {
         std::fprintf(stderr, "error: %s\n", e.what());
+#if FE_HAVE_WINDOW
+        if (viaLauncher) MessageBoxA(nullptr, e.what(), "FearEffectRe", MB_OK | MB_ICONERROR);
+#endif
         return 1;
     }
     return 0;
