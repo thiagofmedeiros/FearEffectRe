@@ -53,11 +53,11 @@ std::vector<Display> listDisplays() {
 
 namespace {
 
-enum : int { kIdPath = 101, kIdBrowse, kIdResolution, kIdFullscreen, kIdPlay, kIdQuit, kIdDisplay, kIdVideo, kIdBuildCache, kIdModern, kIdWidescreen };
+enum : int { kIdPath = 101, kIdBrowse, kIdResolution, kIdFullscreen, kIdPlay, kIdQuit, kIdDisplay, kIdVideo, kIdBuildCache, kIdModern, kIdWidescreen, kIdHealth, kIdAmmo };
 
 struct State {
     HWND path = nullptr, combo = nullptr, full = nullptr, display = nullptr;
-    HWND video = nullptr, modern = nullptr, widescreen = nullptr;
+    HWND video = nullptr, modern = nullptr, widescreen = nullptr, health = nullptr, ammo = nullptr;
     bool play = false, done = false;
 };
 
@@ -178,6 +178,8 @@ bool runLauncher(LaunchSettings& settings) {
     if (vid < 0 || vid > 2) vid = 1;
     bool modern = GetPrivateProfileIntW(L"launcher", L"modern", settings.modern ? 1 : 0, ini.c_str()) != 0;
     bool wide = GetPrivateProfileIntW(L"launcher", L"widescreen", settings.widescreen ? 1 : 0, ini.c_str()) != 0;
+    bool health = GetPrivateProfileIntW(L"cheats", L"health", settings.infiniteHealth ? 1 : 0, ini.c_str()) != 0;
+    bool ammo = GetPrivateProfileIntW(L"cheats", L"ammo", settings.infiniteAmmo ? 1 : 0, ini.c_str()) != 0;
     // the display row is only there when there is a choice to make
     const int extra = displays.size() > 1 ? 32 : 0;
 
@@ -191,7 +193,7 @@ bool runLauncher(LaunchSettings& settings) {
     RegisterClassW(&wc);
 
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT r{0, 0, 520, 274 + extra};
+    RECT r{0, 0, 520, 300 + extra};
     AdjustWindowRect(&r, style, FALSE);
     int w = r.right - r.left, h = r.bottom - r.top;
     HWND hwnd = CreateWindowW(wc.lpszClassName, L"FearEffectRe", style, (GetSystemMetrics(SM_CXSCREEN) - w) / 2,
@@ -217,7 +219,7 @@ bool runLauncher(LaunchSettings& settings) {
     SendMessageW(st.full, BM_SETCHECK, full ? BST_CHECKED : BST_UNCHECKED, 0);
     if (extra) {
         make(L"STATIC", L"Display:", 0, 16, 112, 80, 18, 0);
-        st.display = make(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, 100, 108, 220, 200, kIdDisplay);
+        st.display = make(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, 100, 108, 300, 200, kIdDisplay);
         for (size_t i = 0; i < displays.size(); ++i) {
             std::wstring label = L"Display " + std::to_wstring(i + 1) + L" (" + std::to_wstring(displays[i].width) + L" x " +
                                  std::to_wstring(displays[i].height) + (displays[i].primary ? L", primary)" : L")");
@@ -227,21 +229,26 @@ bool runLauncher(LaunchSettings& settings) {
     }
     make(L"STATIC", L"Video:", 0, 16, 112 + extra, 80, 18, 0);
     st.video = make(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, 100, 108 + extra, 404, 200, kIdVideo);
-    for (const wchar_t* label : {L"Original (movies and backgrounds enlarged as they are)",
+    for (const wchar_t* label : {L"Original (movies and backgrounds as they are)",
                                  L"AI upscale, fast (live on the graphics card)",
-                                 L"AI upscale, best quality (builds a local HD cache; slow the first time)"})
+                                 L"AI upscale, best (cached; slow the first time)"})
         SendMessageW(st.video, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
     SendMessageW(st.video, CB_SETCURSEL, static_cast<WPARAM>(vid), 0);
-    st.modern = make(L"BUTTON", L"Modern movement: the character walks the way the stick or D-pad points on screen",
+    st.modern = make(L"BUTTON", L"Modern movement (walk where the stick points on screen)",
                      WS_TABSTOP | BS_AUTOCHECKBOX, 16, 142 + extra, 488, 20, kIdModern);
     SendMessageW(st.modern, BM_SETCHECK, modern ? BST_CHECKED : BST_UNCHECKED, 0);
-    st.widescreen = make(L"BUTTON", L"Widescreen: gameplay and movies fill the width, without the black bands",
+    st.widescreen = make(L"BUTTON", L"Widescreen (gameplay and movies without the black bands)",
                          WS_TABSTOP | BS_AUTOCHECKBOX, 16, 168 + extra, 488, 20, kIdWidescreen);
     SendMessageW(st.widescreen, BM_SETCHECK, wide ? BST_CHECKED : BST_UNCHECKED, 0);
-    make(L"STATIC", L"The picture keeps its shape inside the chosen size (4:3, or 2:1 in widescreen).", 0, 16, 196 + extra, 488, 18, 0);
-    make(L"BUTTON", L"Build HD cache...", WS_TABSTOP, 16, 230 + extra, 140, 30, kIdBuildCache);
-    make(L"BUTTON", L"Play", WS_TABSTOP | BS_DEFPUSHBUTTON, 314, 230 + extra, 92, 30, kIdPlay);
-    make(L"BUTTON", L"Quit", WS_TABSTOP, 412, 230 + extra, 92, 30, kIdQuit);
+    make(L"STATIC", L"Cheats:", 0, 16, 196 + extra, 80, 18, 0);
+    st.health = make(L"BUTTON", L"Infinite health", WS_TABSTOP | BS_AUTOCHECKBOX, 100, 194 + extra, 140, 20, kIdHealth);
+    SendMessageW(st.health, BM_SETCHECK, health ? BST_CHECKED : BST_UNCHECKED, 0);
+    st.ammo = make(L"BUTTON", L"Infinite ammo", WS_TABSTOP | BS_AUTOCHECKBOX, 250, 194 + extra, 140, 20, kIdAmmo);
+    SendMessageW(st.ammo, BM_SETCHECK, ammo ? BST_CHECKED : BST_UNCHECKED, 0);
+    make(L"STATIC", L"The picture keeps its shape: 4:3, or 2:1 in widescreen.", 0, 16, 222 + extra, 488, 18, 0);
+    make(L"BUTTON", L"Build HD cache...", WS_TABSTOP, 16, 256 + extra, 140, 30, kIdBuildCache);
+    make(L"BUTTON", L"Play", WS_TABSTOP | BS_DEFPUSHBUTTON, 314, 256 + extra, 92, 30, kIdPlay);
+    make(L"BUTTON", L"Quit", WS_TABSTOP, 412, 256 + extra, 92, 30, kIdQuit);
 
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&st));
     ShowWindow(hwnd, SW_SHOW);
@@ -281,6 +288,10 @@ bool runLauncher(LaunchSettings& settings) {
         WritePrivateProfileStringW(L"launcher", L"modern", settings.modern ? L"1" : L"0", ini.c_str());
         settings.widescreen = SendMessageW(st.widescreen, BM_GETCHECK, 0, 0) == BST_CHECKED;
         WritePrivateProfileStringW(L"launcher", L"widescreen", settings.widescreen ? L"1" : L"0", ini.c_str());
+        settings.infiniteHealth = SendMessageW(st.health, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        settings.infiniteAmmo = SendMessageW(st.ammo, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        WritePrivateProfileStringW(L"cheats", L"health", settings.infiniteHealth ? L"1" : L"0", ini.c_str());
+        WritePrivateProfileStringW(L"cheats", L"ammo", settings.infiniteAmmo ? L"1" : L"0", ini.c_str());
     }
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
     DestroyWindow(hwnd);

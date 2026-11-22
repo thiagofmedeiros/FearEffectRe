@@ -34,6 +34,7 @@ struct LaunchSettings {
     int video = 1;       // movies and backgrounds: 0 original, 1 AI fast, 2 AI best (cached)
     bool modern = false; // screen-relative movement instead of tank controls
     bool widescreen = false;  // gameplay and movies without the black bands, filling the width
+    bool infiniteHealth = false, infiniteAmmo = false;  // the game's own cheats
 };
 
 // Returns false when the dialog was closed without pressing Play.

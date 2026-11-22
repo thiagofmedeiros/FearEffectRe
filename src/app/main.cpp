@@ -120,6 +120,7 @@ int usage() {
                  "--scale N sets the internal resolution multiplier (default: enough for the output height),\n"
                  "--video original|fast|best: AI upscaling of movies and backgrounds (best keeps an HD cache),\n"
                  "--widescreen: gameplay and movies (a letterboxed 2:1 picture) fill the width, without black bands,\n"
+                 "--infinite-health and --infinite-ammo turn on the game's own cheats,\n"
                  "--modern: the stick or D-pad moves the character in that direction on screen (no tank controls),\n"
                  "--build-hd-cache enlarges every movie and background frame of all discs into the HD cache (hours).\n"
                  "Run without arguments for the launcher.\n");
@@ -135,6 +136,7 @@ int main(int argc, char** argv) {
     int scale = 0;    // internal resolution multiplier; 0 = chosen from the output height
     bool modern = false;  // screen-relative movement instead of tank controls
     bool widescreen = false;  // letterboxed picture without its black bands
+    bool infiniteHealth = false, infiniteAmmo = false;
 #if FE_HAVE_WINDOW
     app::VideoMode videoMode = app::VideoMode::Original;
 #endif
@@ -151,6 +153,8 @@ int main(int argc, char** argv) {
         videoMode = static_cast<app::VideoMode>(launch.video);
         modern = launch.modern;
         widescreen = launch.widescreen;
+        infiniteHealth = launch.infiniteHealth;
+        infiniteAmmo = launch.infiniteAmmo;
         viaLauncher = true;
         FreeConsole();  // started by double-click: no need for the console window
     }
@@ -171,6 +175,7 @@ int main(int argc, char** argv) {
     int audioPeak = 0;
     unsigned shotEvery = 300;
     fe::u64 ramFrom = 0;  // first frame --ram writes
+    bool hdShots = false;  // --shots at the internal resolution instead of the console's
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--frames" && i + 1 < argc) frames = static_cast<unsigned>(std::atoi(argv[++i]));
@@ -197,6 +202,7 @@ int main(int argc, char** argv) {
         else if (a == "--shots" && i + 1 < argc) shotDir = argv[++i];
         else if (a == "--ram" && i + 1 < argc) ramDir = argv[++i];
         else if (a == "--ram-from" && i + 1 < argc) ramFrom = static_cast<fe::u64>(std::atoll(argv[++i]));
+        else if (a == "--hd-shots") hdShots = true;
         else if (a == "--every" && i + 1 < argc) shotEvery = static_cast<unsigned>(std::atoi(argv[++i]));
         else if (a == "--input" && i + 1 < argc) inputScript = argv[++i];
         else if (a == "--dump" && i + 1 < argc) dumpPath = argv[++i];
@@ -205,6 +211,8 @@ int main(int argc, char** argv) {
         else if (a == "--build-hd-cache") buildHdCache = true;
         else if (a == "--modern") modern = true;
         else if (a == "--widescreen") widescreen = true;
+        else if (a == "--infinite-health") infiniteHealth = true;
+        else if (a == "--infinite-ammo") infiniteAmmo = true;
         else return usage();
     }
 #if FE_HAVE_WINDOW
@@ -385,6 +393,14 @@ int main(int argc, char** argv) {
             for (const auto& p : presses)
                 if (m.frame >= p.frame && m.frame < p.frame + p.length) held |= p.mask;
             if (modern) held = modernControls.apply(m, held, analog, stickX, stickY);
+            // The game's own cheat switches (the published GameShark codes
+            // 80077810 0001 and 0002): bit 0 infinite ammo, bit 1 infinite health.
+            if (infiniteHealth || infiniteAmmo) {
+                fe::u16 flags;
+                std::memcpy(&flags, m.ram.get() + 0x77810, 2);
+                flags = static_cast<fe::u16>(flags | (infiniteAmmo ? 1 : 0) | (infiniteHealth ? 2 : 0));
+                std::memcpy(m.ram.get() + 0x77810, &flags, 2);
+            }
             m.padState = static_cast<fe::u16>(~held);
             // --ram <dir>: main memory at the same frames as the screenshots (finding game variables)
             if (!ramDir.empty() && shotEvery && m.frame >= ramFrom && m.frame % shotEvery == 0) {
@@ -398,7 +414,21 @@ int main(int argc, char** argv) {
             if (!shotDir.empty() && shotEvery && m.frame % shotEvery == 0) {
                 std::vector<fe::u8> rgb;
                 int w = 0, h = 0;
-                m.gpu->display(rgb, w, h);
+                const fe::u16* hp;
+                int hs, hx, hy;
+                if (hdShots && m.gpu->scale > 1 && m.gpu->displayEnabled && m.gpu->frame(hp, hs, hx, hy, w, h)) {
+                    rgb.resize(static_cast<size_t>(w) * h * 3);
+                    for (int yy = 0; yy < h; ++yy)
+                        for (int xx = 0; xx < w; ++xx) {
+                            const fe::u16 p = hp[static_cast<size_t>(hy + yy) * hs + hx + xx];
+                            fe::u8* o = &rgb[(static_cast<size_t>(yy) * w + xx) * 3];
+                            o[0] = static_cast<fe::u8>((p & 31) << 3);
+                            o[1] = static_cast<fe::u8>(((p >> 5) & 31) << 3);
+                            o[2] = static_cast<fe::u8>(((p >> 10) & 31) << 3);
+                        }
+                } else {
+                    m.gpu->display(rgb, w, h);
+                }
                 char name[32];
                 std::snprintf(name, sizeof name, "/f%06llu.png", static_cast<unsigned long long>(m.frame));
                 writePng(shotDir + name, rgb, w, h);
