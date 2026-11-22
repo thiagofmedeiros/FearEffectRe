@@ -26,7 +26,7 @@ call.
 | Interrupts, DMA, root counters | Working; root counter interrupts are not implemented (the game has not asked for them) |
 | CD-ROM controller | Data, streaming and XA audio sectors; disc change |
 | MDEC (movies and backgrounds) | Working |
-| GPU | Software renderer at native resolution; no dithering, edge rules not pixel-exact |
+| GPU | Software renderer, 1x to 16x internal resolution, multithreaded; no dithering, no texture filtering, edge rules not pixel-exact |
 | Geometry engine (GTE) | All commands; not verified against hardware test vectors |
 | SPU | 24 voices, envelopes, XA audio; no reverb, noise or pitch modulation |
 | Controller | Digital pad in port 1 from the keyboard or an Xbox controller |
@@ -54,8 +54,11 @@ Without `FE_DISC_IMAGE` only the interpreter is built. With MinGW, keep the comp
 Start `build/FearEffectRe.exe` without arguments (double-click works) for the launcher:
 choose the disc 1 image, a resolution (Original 640x480, 720p, 1080p, 1440p or 4K) and
 fullscreen, then press Play. The choices are remembered in `FearEffectRe.ini` next to the
-program. The resolution is the size of the output: the game is still drawn at the
-console's resolution and scaled to the largest 4:3 picture that fits. A size as large as
+program. The game is drawn at that resolution: polygons, sprites and text are rasterised at a
+multiple of the console's 240 lines that fills the output (3x for 720p, 5x for 1080p, 6x
+for 1440p, 9x for 4K; `--scale N` overrides it), and shown as the largest 4:3 picture that
+fits. Movies and the streamed backgrounds are 320x160 video on the disc, so they are
+enlarged, not sharper. A size as large as
 the screen is shown borderless. With more than one monitor connected the launcher also
 asks which display to use (`--display N` on the command line, 1 is the primary).
 

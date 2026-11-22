@@ -19,9 +19,15 @@ public:
     // Presents one frame and waits for the next frame time. Returns false
     // once the window has been closed.
     bool present(const std::vector<std::uint8_t>& rgb, int width, int height);
+    // Same, straight from a 15-bit frame buffer (red in the low bits): the
+    // rectangle x,y,width,height of an image `stride` pixels wide.
+    bool present(const std::uint16_t* pixels, int stride, int x, int y, int width, int height);
     // Pad buttons held right now, one bit per button (1 = pressed), in the
     // PlayStation's bit order.
     std::uint16_t buttons() const;
+    // A frame in which the picture did not change: handles window messages
+    // and waits for the next frame time without drawing.
+    bool idle();
     bool fastForward() const;
     // 1..4 when F2..F5 was pressed since the last call (insert that disc), else 0.
     int discRequest();
@@ -29,6 +35,8 @@ public:
     void audio(const std::vector<std::int16_t>& stereo);
 
 private:
+    bool pump();
+    void pace();
     Impl* impl_;
 };
 

@@ -2,6 +2,7 @@
 // number of frames and reports how far it got and which BIOS functions and
 // hardware registers it needed.
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -113,7 +114,8 @@ int usage() {
                  "F square, Space triangle, Tab L1, R R1, 1 L2, 4 R2, P start, Backspace select, F1 fast-forward,\n"
                  "F2-F5 insert disc 1-4. Saves go to ./saves (--saves dir, or --saves none for no memory card).\n"
                  "--resolution original|720p|1080p|1440p|4k and --fullscreen set the output size,\n"
-                 "--display N picks the monitor (1 = primary).\n"
+                 "--display N picks the monitor (1 = primary),\n"
+                 "--scale N sets the internal resolution multiplier (default: enough for the output height).\n"
                  "Run without arguments for the launcher.\n");
     return 2;
 }
@@ -124,6 +126,7 @@ int main(int argc, char** argv) {
     int resolution = 1;  // index into app::kResolutions
     bool fullscreen = false, viaLauncher = false;
     int display = 0;  // index into app::listDisplays()
+    int scale = 0;    // internal resolution multiplier; 0 = chosen from the output height
     std::string discPath;
 #if FE_HAVE_WINDOW
     SetProcessDPIAware();  // window sizes are real pixels
@@ -159,6 +162,7 @@ int main(int argc, char** argv) {
         else if (a == "--interpreter") interpreterOnly = true;
         else if (a == "--log-bios") logBios = true;
         else if (a == "--fullscreen") fullscreen = true;
+        else if (a == "--scale" && i + 1 < argc) scale = std::atoi(argv[++i]);
         else if (a == "--display" && i + 1 < argc) display = std::atoi(argv[++i]) - 1;
 #if FE_HAVE_WINDOW
         else if (a == "--resolution" && i + 1 < argc) {
@@ -195,6 +199,19 @@ int main(int argc, char** argv) {
         m.cd = std::make_shared<fe::Cdrom>(discPtr);
         m.cd->traceLeft = logCd;
         m.logBios = logBios;
+#if FE_HAVE_WINDOW
+        if (scale == 0 && frames == 0) {
+            // enough lines to fill the output: the console draws 240
+            int outHeight = app::kResolutions[resolution].height;
+            if (fullscreen) {
+                auto displays = app::listDisplays();
+                outHeight = displays[display >= 0 && display < static_cast<int>(displays.size()) ? display : 0].height;
+            }
+            scale = (outHeight + 239) / 240;
+        }
+#endif
+        if (scale < 1) scale = 1;
+        m.gpu->setScale(scale);
         if (savesDir != "none") {
             std::error_code ec;
             std::filesystem::create_directories(savesDir, ec);
@@ -267,6 +284,7 @@ int main(int argc, char** argv) {
             swapFrame = static_cast<fe::u64>(std::atoll(swapScript.substr(0, colon).c_str()));
             swapDisc = std::atoi(swapScript.substr(colon + 1).c_str());
         }
+        fe::u64 lastActivity = ~0ull;
         m.onVblank = [&]() {
             fe::u16 held = 0;
             if (m.frame == swapFrame) insertDisc(swapDisc);
@@ -278,10 +296,23 @@ int main(int argc, char** argv) {
             if (!wavPath.empty()) wav.insert(wav.end(), m.audio.begin(), m.audio.end());
 #if FE_HAVE_WINDOW
             if (window) {
-                std::vector<fe::u8> rgb;
-                int w = 0, h = 0;
-                m.gpu->display(rgb, w, h);
-                if (!window->present(rgb, w, h)) throw fe::Stop{"window closed"};
+                const fe::u16* pixels;
+                int stride, fx, fy, w = 0, h = 0;
+                bool open;
+                // the game draws 30 or fewer pictures a second: nothing to show when the GPU was idle
+                fe::u64 activity = m.gp0Words + m.gp1Words;
+                bool changed = activity != lastActivity || (m.frame & 63) == 0;
+                lastActivity = activity;
+                if (!changed) {
+                    open = window->idle();
+                } else if (m.gpu->displayEnabled && m.gpu->frame(pixels, stride, fx, fy, w, h)) {
+                    open = window->present(pixels, stride, fx, fy, w, h);
+                } else {
+                    std::vector<fe::u8> rgb;
+                    m.gpu->display(rgb, w, h);
+                    open = window->present(rgb, w, h);
+                }
+                if (!open) throw fe::Stop{"window closed"};
                 held |= window->buttons();
                 if (int disc = window->discRequest()) insertDisc(disc);
                 window->audio(m.audio);
@@ -303,7 +334,9 @@ int main(int argc, char** argv) {
         m.nativeEnabled = !interpreterOnly;
         m.cycleLimit = frames ? static_cast<fe::u64>(frames) * fe::kCyclesPerFrame : ~0ull;
         std::printf("cpu     %s, entry %08x, sp %08x\n", mode, m.cpu.pc, m.cpu.r[29]);
+        std::printf("render  %dx internal resolution\n", m.gpu->scale);
 
+        auto wallStart = std::chrono::steady_clock::now();
         std::string reason = "returned";
         try {
             m.run();
@@ -315,6 +348,10 @@ int main(int argc, char** argv) {
         std::printf("stopped %s after %llu frames (%llu cycles), pc %08x ra %08x\n", reason.c_str(),
                     static_cast<unsigned long long>(m.frame), static_cast<unsigned long long>(m.clock), m.cpu.pc,
                     m.cpu.r[31]);
+        {
+            double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - wallStart).count();
+            std::printf("speed   %.1f frames per second over %.1f s (console: 59.94)\n", wall > 0 ? m.frame / wall : 0.0, wall);
+        }
         std::printf("irq     I_STAT %04x I_MASK %04x SR %08x hook %08x\n", m.iStat, m.iMask, m.cpu.cop0[12],
                     m.entryIntHook);
         std::printf("cdrom   %llu commands, %llu sectors read, %llu XA audio sectors\n",

@@ -12,6 +12,18 @@ namespace fe {
 struct Gpu {
     Gpu() : vram(1024 * 512, 0) {}
 
+    // Internal resolution multiplier (1..16). Above 1 every primitive is also
+    // rasterised into `hires`, a copy of video memory `scale` times larger in
+    // each direction, which is what gets displayed. Video memory itself stays
+    // at the console's resolution so textures and read-back behave as before.
+    void setScale(int factor);
+    int scale = 1;
+    std::vector<u16> hires;
+    // The displayed part of the (scaled) frame buffer for 15-bit display
+    // modes: `pixels` has `stride` pixels per row. Returns false in 24-bit
+    // modes, where display() must be used.
+    bool frame(const u16*& pixels, int& stride, int& x, int& y, int& width, int& height) const;
+
     void gp0(u32 word);
     void gp1(u32 word);
     u32 read();
@@ -40,6 +52,17 @@ private:
     void rect();
     void triangle(Vertex a, Vertex b, Vertex c, bool textured, bool gouraud, bool semi, bool raw);
     void drawLine(Vertex a, Vertex b, bool semi);
+    void triangleHi(Vertex a, Vertex b, Vertex c, bool textured, bool gouraud, bool semi, bool raw);
+    void rectHi(int x, int y, int w, int h, int u0, int v0, int r, int g, int b, bool textured, bool semi, bool raw);
+    void plotHi(int x, int y, u16 color, bool semi);
+    void fillHi(int x, int y, u16 color);  // one native pixel as a scale x scale block
+    // Only the parts of video memory used as frame buffers (everything that
+    // has been a drawing or display area) are kept in `hires`; texture
+    // uploads elsewhere are not mirrored.
+    bool inFrameBuffer(int x, int y) const { return x >= fbX1 && x <= fbX2 && y >= fbY1 && y <= fbY2; }
+    void growFrameBuffer(int x1, int y1, int x2, int y2);
+    void trackDisplay();
+    int fbX1 = 1024, fbY1 = 512, fbX2 = -1, fbY2 = -1;
     u16 texel(int u, int v) const;
     void plot(int x, int y, u16 color, bool semi);
     void setTexpage(u32 bits);
