@@ -77,6 +77,86 @@ struct Window::Impl {
     GLuint texture16 = 0;     // 15-bit frames, stored as the card's native 5-5-5-1 layout
     bool swizzle = false;     // red and blue are exchanged by the texture, not by converting pixels
     void draw(GLenum format, GLenum type, const void* pixels, int stride, int x, int y, int width, int height);
+    // Widescreen: gameplay and movies are a 2:1 picture on lines 40-199 of
+    // the 240-line frame, black above and below. While those bands are
+    // black, only the picture is shown, filling the width; menus that use
+    // the whole frame are shown at 4:3. The choice follows the picture after
+    // a few frames, so a fade to black does not make it jump back and forth.
+    bool widescreen = false;
+    bool cropped = false;
+    int cropVotes = 0;
+    void decide(bool bandsBlack) {
+        if (!widescreen) {
+            cropped = false;
+            return;
+        }
+        if (bandsBlack == cropped) {
+            cropVotes = 0;
+        } else if (++cropVotes >= 8) {
+            cropped = bandsBlack;
+            cropVotes = 0;
+        }
+    }
+    // Are the bands above and below the 2:1 picture black, apart from the
+    // HUD (the health bars sit in the top band)? Sampled, not every pixel;
+    // up to 8% lit still counts as black. A full-frame menu lights far more.
+    static bool dark16(std::uint16_t p) { return (p & 31) <= 2 && ((p >> 5) & 31) <= 2 && ((p >> 10) & 31) <= 2; }
+    static bool darkRgb(const std::uint8_t* p) { return p[0] <= 20 && p[1] <= 20 && p[2] <= 20; }
+    static bool bandsBlack16(const std::uint16_t* pixels, int stride, int x, int y, int width, int height) {
+        const int band = height / 6;
+        int lit = 0, all = 0;
+        for (int r = 0; r < band; r += 3)
+            for (int row : {y + r, y + height - 1 - r})
+                for (int i = 0; i < width; i += 7, ++all)
+                    if (!dark16(pixels[static_cast<size_t>(row) * stride + x + i])) ++lit;
+        return lit * 100 <= all * 8;
+    }
+    static bool bandsBlackRgb(const std::uint8_t* rgb, int width, int height) {
+        const int band = height / 6;
+        int lit = 0, all = 0;
+        for (int r = 0; r < band; r += 3)
+            for (int row : {r, height - 1 - r})
+                for (int i = 0; i < width; i += 7, ++all)
+                    if (!darkRgb(rgb + (static_cast<size_t>(row) * width + i) * 3)) ++lit;
+        return lit * 100 <= all * 8;
+    }
+    // While cropped, whatever is drawn in the bands (the HUD) is laid over
+    // the top and bottom of the picture, with black left transparent. The
+    // bands are copied at up to 720 lines' detail for the whole frame.
+    GLuint overlayTex[2]{};
+    std::vector<std::uint32_t> overlay[2];
+    int overlayW = 0, overlayH = 0;
+    bool overlayReady = false;
+    template <typename Pixel>
+    void makeOverlays(int width, int height, Pixel pixel) {
+        const int band = height / 6, step = std::max(1, height / 720);
+        overlayW = width / step;
+        overlayH = band / step;
+        overlayReady = overlayW > 0 && overlayH > 0;
+        for (int k = 0; k < 2 && overlayReady; ++k) {
+            overlay[k].resize(static_cast<size_t>(overlayW) * overlayH);
+            const int first = k == 0 ? 0 : height - band;
+            for (int r = 0; r < overlayH; ++r)
+                for (int i = 0; i < overlayW; ++i) overlay[k][static_cast<size_t>(r) * overlayW + i] = pixel(i * step, first + r * step);
+        }
+    }
+    bool shownCropped = false;  // what the GDI path last drew, to clear the window when it changes
+    // the part of the frame that is shown
+    void crop(int& y, int& height) const {
+        if (!cropped) return;
+        y += height / 6;
+        height = height * 2 / 3;
+    }
+    // size of the picture on screen inside a cw x ch client area
+    void box(int cw, int ch, int& w, int& h) const {
+        if (cropped) {
+            w = std::min(cw, ch * 2);
+            h = w / 2;
+        } else {
+            w = std::min(cw, ch * 4 / 3);
+            h = w * 3 / 4;
+        }
+    }
     GetPadState xinput = loadXInput();
     DWORD padIndex = 0;       // controller slot that answered last
     int padRetry = 0;         // frames until disconnected slots are probed again
@@ -114,7 +194,8 @@ void Window::Impl::draw(GLenum format, GLenum type, const void* pixels, int stri
     RECT rc;
     GetClientRect(hwnd, &rc);
     int cw = rc.right, ch = rc.bottom;
-    int w = std::min(cw, ch * 4 / 3), h = w * 3 / 4;
+    int w, h;
+    box(cw, ch, w, h);
     glViewport(0, 0, cw, ch);
     glClear(GL_COLOR_BUFFER_BIT);
     glViewport((cw - w) / 2, (ch - h) / 2, w, h);
@@ -138,6 +219,35 @@ void Window::Impl::draw(GLenum format, GLenum type, const void* pixels, int stri
     glTexCoord2f(1, 1); glVertex2f(1, -1);
     glTexCoord2f(0, 1); glVertex2f(-1, -1);
     glEnd();
+    if (overlayReady && cropped) {
+        // each band is a quarter of the picture's height (40 of its 160 lines)
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+        glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        for (int k = 0; k < 2; ++k) {
+            if (!overlayTex[k]) {
+                glGenTextures(1, &overlayTex[k]);
+                glBindTexture(GL_TEXTURE_2D, overlayTex[k]);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            }
+            glBindTexture(GL_TEXTURE_2D, overlayTex[k]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, overlayW, overlayH, 0, GL_RGBA, GL_UNSIGNED_BYTE, overlay[k].data());
+            const float top = k == 0 ? 1.0f : -0.5f, bottom = top - 0.5f;
+            glBegin(GL_QUADS);
+            glTexCoord2f(0, 0); glVertex2f(-1, top);
+            glTexCoord2f(1, 0); glVertex2f(1, top);
+            glTexCoord2f(1, 1); glVertex2f(1, bottom);
+            glTexCoord2f(0, 1); glVertex2f(-1, bottom);
+            glEnd();
+        }
+        glDisable(GL_BLEND);
+    }
+    overlayReady = false;
     SwapBuffers(glDc);
 }
 
@@ -268,6 +378,11 @@ int Window::discRequest() {
     return request;
 }
 
+void Window::setWidescreen(bool on) {
+    impl_->widescreen = on;
+    impl_->decide(false);
+}
+
 bool Window::fastForward() const { return GetForegroundWindow() == impl_->hwnd && down(VK_F1); }
 
 std::uint16_t Window::buttons() const {
@@ -383,8 +498,16 @@ bool Window::idle() {
 
 bool Window::present(const std::vector<std::uint8_t>& rgb, int width, int height) {
     if (!pump()) return false;
+    if (impl_->widescreen) impl_->decide(Impl::bandsBlackRgb(rgb.data(), width, height));
+    if (impl_->cropped && impl_->gl)
+        impl_->makeOverlays(width, height, [&](int px, int py) -> std::uint32_t {
+            const std::uint8_t* p = rgb.data() + (static_cast<size_t>(py) * width + px) * 3;
+            return Impl::darkRgb(p) ? 0u : (p[0] | (p[1] << 8) | (p[2] << 16) | 0xFF000000u);
+        });
+    int top = 0, rows = height;
+    impl_->crop(top, rows);
     if (impl_->gl) {
-        impl_->draw(GL_RGB, GL_UNSIGNED_BYTE, rgb.data(), width, 0, 0, width, height);
+        impl_->draw(GL_RGB, GL_UNSIGNED_BYTE, rgb.data(), width, 0, top, width, rows);
         pace();
         return true;
     }
@@ -410,11 +533,18 @@ bool Window::present(const std::vector<std::uint8_t>& rgb, int width, int height
     RECT rc;
     GetClientRect(impl_->hwnd, &rc);
     int cw = rc.right, ch = rc.bottom;
-    int w = std::min(cw, ch * 4 / 3), h = w * 3 / 4;
+    int w, h;
+    impl_->box(cw, ch, w, h);
     HDC dc = GetDC(impl_->hwnd);
+    if (impl_->shownCropped != impl_->cropped) {
+        RECT all{0, 0, cw, ch};
+        FillRect(dc, &all, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+        impl_->shownCropped = impl_->cropped;
+    }
     SetStretchBltMode(dc, COLORONCOLOR);
-    StretchDIBits(dc, (cw - w) / 2, (ch - h) / 2, w, h, 0, 0, width, height, impl_->bgr.data(), &bmi, DIB_RGB_COLORS,
-                  SRCCOPY);
+    // the bitmap is stored bottom-up: source rows count from the bottom
+    StretchDIBits(dc, (cw - w) / 2, (ch - h) / 2, w, h, 0, height - top - rows, width, rows, impl_->bgr.data(), &bmi,
+                  DIB_RGB_COLORS, SRCCOPY);
     ReleaseDC(impl_->hwnd, dc);
 
     pace();
@@ -423,6 +553,15 @@ bool Window::present(const std::vector<std::uint8_t>& rgb, int width, int height
 
 bool Window::present(const std::uint16_t* pixels, int stride, int x, int y, int width, int height) {
     if (!pump()) return false;
+    if (impl_->widescreen) impl_->decide(Impl::bandsBlack16(pixels, stride, x, y, width, height));
+    if (impl_->cropped && impl_->gl)
+        impl_->makeOverlays(width, height, [&](int px, int py) -> std::uint32_t {
+            const std::uint16_t p = pixels[static_cast<size_t>(y + py) * stride + x + px];
+            if (Impl::dark16(p)) return 0u;
+            const std::uint32_t r = (p & 31) << 3, g = ((p >> 5) & 31) << 3, b = ((p >> 10) & 31) << 3;
+            return r | (g << 8) | (b << 16) | 0xFF000000u;
+        });
+    impl_->crop(y, height);
     if (impl_->gl) {
         // video memory layout as OpenGL names it: red in the low five bits, top bit unused
         impl_->draw(impl_->swizzle ? GL_BGRA : GL_RGBA, GL_UNSIGNED_SHORT_1_5_5_5_REV, pixels, stride, x, y, width, height);
@@ -432,7 +571,8 @@ bool Window::present(const std::uint16_t* pixels, int stride, int x, int y, int 
     RECT rc;
     GetClientRect(impl_->hwnd, &rc);
     int cw = rc.right, ch = rc.bottom;
-    int w = std::min(cw, ch * 4 / 3), h = w * 3 / 4;
+    int w, h;
+    impl_->box(cw, ch, w, h);
     if (w <= 0 || h <= 0) {
         pace();
         return true;

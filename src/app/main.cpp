@@ -119,6 +119,7 @@ int usage() {
                  "--display N picks the monitor (1 = primary),\n"
                  "--scale N sets the internal resolution multiplier (default: enough for the output height),\n"
                  "--video original|fast|best: AI upscaling of movies and backgrounds (best keeps an HD cache),\n"
+                 "--widescreen: gameplay and movies (a letterboxed 2:1 picture) fill the width, without black bands,\n"
                  "--modern: the stick or D-pad moves the character in that direction on screen (no tank controls),\n"
                  "--build-hd-cache enlarges every movie and background frame of all discs into the HD cache (hours).\n"
                  "Run without arguments for the launcher.\n");
@@ -133,6 +134,7 @@ int main(int argc, char** argv) {
     int display = 0;  // index into app::listDisplays()
     int scale = 0;    // internal resolution multiplier; 0 = chosen from the output height
     bool modern = false;  // screen-relative movement instead of tank controls
+    bool widescreen = false;  // letterboxed picture without its black bands
 #if FE_HAVE_WINDOW
     app::VideoMode videoMode = app::VideoMode::Original;
 #endif
@@ -148,6 +150,7 @@ int main(int argc, char** argv) {
         display = launch.display;
         videoMode = static_cast<app::VideoMode>(launch.video);
         modern = launch.modern;
+        widescreen = launch.widescreen;
         viaLauncher = true;
         FreeConsole();  // started by double-click: no need for the console window
     }
@@ -201,6 +204,7 @@ int main(int argc, char** argv) {
         else if (a == "--log-cd" && i + 1 < argc) logCd = std::atoi(argv[++i]);
         else if (a == "--build-hd-cache") buildHdCache = true;
         else if (a == "--modern") modern = true;
+        else if (a == "--widescreen") widescreen = true;
         else return usage();
     }
 #if FE_HAVE_WINDOW
@@ -319,6 +323,7 @@ int main(int argc, char** argv) {
         if (frames == 0)
             window = std::make_unique<app::Window>(app::kResolutions[resolution].width, app::kResolutions[resolution].height,
                                                    fullscreen, display);
+        if (window) window->setWidescreen(widescreen);
 #else
         if (frames == 0) frames = 300;
 #endif

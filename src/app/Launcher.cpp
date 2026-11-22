@@ -53,11 +53,11 @@ std::vector<Display> listDisplays() {
 
 namespace {
 
-enum : int { kIdPath = 101, kIdBrowse, kIdResolution, kIdFullscreen, kIdPlay, kIdQuit, kIdDisplay, kIdVideo, kIdBuildCache, kIdModern };
+enum : int { kIdPath = 101, kIdBrowse, kIdResolution, kIdFullscreen, kIdPlay, kIdQuit, kIdDisplay, kIdVideo, kIdBuildCache, kIdModern, kIdWidescreen };
 
 struct State {
     HWND path = nullptr, combo = nullptr, full = nullptr, display = nullptr;
-    HWND video = nullptr, modern = nullptr;
+    HWND video = nullptr, modern = nullptr, widescreen = nullptr;
     bool play = false, done = false;
 };
 
@@ -177,6 +177,7 @@ bool runLauncher(LaunchSettings& settings) {
     int vid = static_cast<int>(GetPrivateProfileIntW(L"launcher", L"video", settings.video, ini.c_str()));
     if (vid < 0 || vid > 2) vid = 1;
     bool modern = GetPrivateProfileIntW(L"launcher", L"modern", settings.modern ? 1 : 0, ini.c_str()) != 0;
+    bool wide = GetPrivateProfileIntW(L"launcher", L"widescreen", settings.widescreen ? 1 : 0, ini.c_str()) != 0;
     // the display row is only there when there is a choice to make
     const int extra = displays.size() > 1 ? 32 : 0;
 
@@ -190,7 +191,7 @@ bool runLauncher(LaunchSettings& settings) {
     RegisterClassW(&wc);
 
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT r{0, 0, 520, 248 + extra};
+    RECT r{0, 0, 520, 274 + extra};
     AdjustWindowRect(&r, style, FALSE);
     int w = r.right - r.left, h = r.bottom - r.top;
     HWND hwnd = CreateWindowW(wc.lpszClassName, L"FearEffectRe", style, (GetSystemMetrics(SM_CXSCREEN) - w) / 2,
@@ -234,10 +235,13 @@ bool runLauncher(LaunchSettings& settings) {
     st.modern = make(L"BUTTON", L"Modern movement: the character walks the way the stick or D-pad points on screen",
                      WS_TABSTOP | BS_AUTOCHECKBOX, 16, 142 + extra, 488, 20, kIdModern);
     SendMessageW(st.modern, BM_SETCHECK, modern ? BST_CHECKED : BST_UNCHECKED, 0);
-    make(L"STATIC", L"The picture keeps its 4:3 shape inside the chosen size.", 0, 16, 170 + extra, 480, 18, 0);
-    make(L"BUTTON", L"Build HD cache...", WS_TABSTOP, 16, 204 + extra, 140, 30, kIdBuildCache);
-    make(L"BUTTON", L"Play", WS_TABSTOP | BS_DEFPUSHBUTTON, 314, 204 + extra, 92, 30, kIdPlay);
-    make(L"BUTTON", L"Quit", WS_TABSTOP, 412, 204 + extra, 92, 30, kIdQuit);
+    st.widescreen = make(L"BUTTON", L"Widescreen: gameplay and movies fill the width, without the black bands",
+                         WS_TABSTOP | BS_AUTOCHECKBOX, 16, 168 + extra, 488, 20, kIdWidescreen);
+    SendMessageW(st.widescreen, BM_SETCHECK, wide ? BST_CHECKED : BST_UNCHECKED, 0);
+    make(L"STATIC", L"The picture keeps its shape inside the chosen size (4:3, or 2:1 in widescreen).", 0, 16, 196 + extra, 488, 18, 0);
+    make(L"BUTTON", L"Build HD cache...", WS_TABSTOP, 16, 230 + extra, 140, 30, kIdBuildCache);
+    make(L"BUTTON", L"Play", WS_TABSTOP | BS_DEFPUSHBUTTON, 314, 230 + extra, 92, 30, kIdPlay);
+    make(L"BUTTON", L"Quit", WS_TABSTOP, 412, 230 + extra, 92, 30, kIdQuit);
 
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&st));
     ShowWindow(hwnd, SW_SHOW);
@@ -275,6 +279,8 @@ bool runLauncher(LaunchSettings& settings) {
         WritePrivateProfileStringW(L"launcher", L"video", std::to_wstring(settings.video).c_str(), ini.c_str());
         settings.modern = SendMessageW(st.modern, BM_GETCHECK, 0, 0) == BST_CHECKED;
         WritePrivateProfileStringW(L"launcher", L"modern", settings.modern ? L"1" : L"0", ini.c_str());
+        settings.widescreen = SendMessageW(st.widescreen, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        WritePrivateProfileStringW(L"launcher", L"widescreen", settings.widescreen ? L"1" : L"0", ini.c_str());
     }
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
     DestroyWindow(hwnd);

@@ -90,6 +90,11 @@ start and select, and the d-pad or left stick moves. F2 to F5 insert disc 1 to 4
 their `(Disc N)` name). Saves are kept in `saves/`; use `--saves dir` to choose another
 folder or `--saves none` to play without a memory card.
 
+**Widescreen** (launcher checkbox, `--widescreen`): gameplay and movies are a 2:1 picture
+letterboxed inside the 4:3 frame. With this option the black bands are left out and the picture
+fills the width of the window or screen; the title screen and menus, which use the whole frame,
+stay 4:3.
+
 **Modern movement** (launcher checkbox, `--modern`) replaces the tank controls: push the
 stick or D-pad towards where you want to go on the screen and the character turns that way
 and walks. Pause and other menus keep the normal D-pad, and anywhere the program cannot

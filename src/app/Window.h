@@ -32,6 +32,9 @@ public:
     // and waits for the next frame time without drawing.
     bool idle();
     bool fastForward() const;
+    // Show the letterboxed 2:1 gameplay and movie picture without its black
+    // bands, as wide as the window allows (menus stay 4:3).
+    void setWidescreen(bool on);
     // 1..4 when F2..F5 was pressed since the last call (insert that disc), else 0.
     int discRequest();
     // Queues stereo 44100 Hz samples for playback.
