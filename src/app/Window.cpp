@@ -83,6 +83,31 @@ struct Window::Impl {
     static constexpr int kBuffers = 24;
     WAVEHDR headers[kBuffers]{};
     std::vector<std::int16_t> buffers[kBuffers];
+    // Blocks handed to the sound card and not played yet. The frame timer is
+    // nudged to keep this between kAudioLow and kAudioHigh, so a slow frame
+    // does not empty the queue (a crack) and clock drift does not overfill it.
+    static constexpr int kAudioLow = 4, kAudioHigh = 7;
+    int queued() const {
+        int n = 0;
+        for (const WAVEHDR& h : headers)
+            if ((h.dwFlags & WHDR_PREPARED) && !(h.dwFlags & WHDR_DONE)) ++n;
+        return n;
+    }
+    bool write(const std::vector<std::int16_t>& stereo) {
+        for (int i = 0; i < kBuffers; ++i) {
+            WAVEHDR& h = headers[i];
+            if ((h.dwFlags & WHDR_PREPARED) && !(h.dwFlags & WHDR_DONE)) continue;  // still playing
+            if (h.dwFlags & WHDR_PREPARED) waveOutUnprepareHeader(wave, &h, sizeof h);
+            buffers[i] = stereo;
+            h = WAVEHDR{};
+            h.lpData = reinterpret_cast<LPSTR>(buffers[i].data());
+            h.dwBufferLength = static_cast<DWORD>(stereo.size() * sizeof(std::int16_t));
+            waveOutPrepareHeader(wave, &h, sizeof h);
+            waveOutWrite(wave, &h, sizeof h);
+            return true;
+        }
+        return false;
+    }
 };
 
 void Window::Impl::draw(GLenum format, GLenum type, const void* pixels, int stride, int x, int y, int width, int height) {
@@ -223,19 +248,13 @@ Window::~Window() {
 
 void Window::audio(const std::vector<std::int16_t>& stereo) {
     if (!impl_->wave || stereo.empty() || fastForward()) return;
-    for (int i = 0; i < Impl::kBuffers; ++i) {
-        WAVEHDR& h = impl_->headers[i];
-        if ((h.dwFlags & WHDR_PREPARED) && !(h.dwFlags & WHDR_DONE)) continue;  // still playing
-        if (h.dwFlags & WHDR_PREPARED) waveOutUnprepareHeader(impl_->wave, &h, sizeof h);
-        impl_->buffers[i] = stereo;
-        h = WAVEHDR{};
-        h.lpData = reinterpret_cast<LPSTR>(impl_->buffers[i].data());
-        h.dwBufferLength = static_cast<DWORD>(stereo.size() * sizeof(std::int16_t));
-        waveOutPrepareHeader(impl_->wave, &h, sizeof h);
-        waveOutWrite(impl_->wave, &h, sizeof h);
-        return;
+    // ran dry (start, or a long stall): put a short silence first so there is
+    // a cushion again, instead of crackling block by block
+    if (impl_->queued() == 0) {
+        std::vector<std::int16_t> silence(stereo.size(), 0);
+        for (int i = 0; i < Impl::kAudioLow; ++i) impl_->write(silence);
     }
-    // every buffer is queued: the game is running ahead of the sound card, drop this block
+    impl_->write(stereo);  // false when every buffer is queued: this block is dropped
 }
 
 int Window::discRequest() {
@@ -319,8 +338,21 @@ void Window::pace() {
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     if (!fastForward()) {
-        impl_->next.QuadPart += impl_->freq.QuadPart * 1001 / 60000;
-        if (impl_->next.QuadPart < now.QuadPart - impl_->freq.QuadPart / 10) impl_->next = now;  // fell behind
+        // 59.94 Hz, 1% faster or slower to keep the sound queue in range
+        LONGLONG period = impl_->freq.QuadPart * 1001 / 60000;
+        if (impl_->wave) {
+            const int q = impl_->queued();
+            if (q < Impl::kAudioLow) period -= period / 100;
+            else if (q > Impl::kAudioHigh) period += period / 100;
+        }
+        impl_->next.QuadPart += period;
+        // Fell behind (a slow frame): catch up gently, at most half a
+        // frame each frame, instead of running frames back to back, which
+        // makes movies visibly rush after every slow frame. Far behind
+        // (a pause, a stall): start again from now.
+        const LONGLONG late = now.QuadPart - impl_->next.QuadPart;
+        if (late > impl_->freq.QuadPart / 10) impl_->next = now;
+        else if (late > period / 2) impl_->next.QuadPart = now.QuadPart - period / 2;
         while (now.QuadPart < impl_->next.QuadPart) {
             LONGLONG ms = (impl_->next.QuadPart - now.QuadPart) * 1000 / impl_->freq.QuadPart;
             if (ms > 1) Sleep(static_cast<DWORD>(ms - 1));

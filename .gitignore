@@ -14,3 +14,7 @@ _refs/
 
 .idea/
 __pycache__/
+
+# AI upscaling: runtime, models and the HD picture cache
+/ai/
+/hdcache/

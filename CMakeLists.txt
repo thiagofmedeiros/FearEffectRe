@@ -72,8 +72,16 @@ endif()
 
 add_executable(FearEffectRe src/app/main.cpp)
 if(WIN32)
-    target_sources(FearEffectRe PRIVATE src/app/Window.cpp src/app/Launcher.cpp)
-    target_link_libraries(FearEffectRe PRIVATE user32 gdi32 winmm comdlg32 opengl32)
+    target_sources(FearEffectRe PRIVATE src/app/Window.cpp src/app/Launcher.cpp src/app/VideoAI.cpp src/app/StrVideo.cpp)
+    target_include_directories(FearEffectRe PRIVATE third_party/onnxruntime/include)
+    target_link_libraries(FearEffectRe PRIVATE user32 gdi32 winmm comdlg32 opengl32 ole32 windowscodecs)
+    # AI upscaling: a folder holding onnxruntime.dll, DirectML.dll, fast_x4.onnx and
+    # best_x4.onnx (see tools/ai/README.md) is copied next to the program as `ai`.
+    set(FE_AI_DIR "" CACHE PATH "Folder with the ONNX Runtime/DirectML DLLs and the upscaling models")
+    if(FE_AI_DIR)
+        add_custom_command(TARGET FearEffectRe POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "${FE_AI_DIR}" "$<TARGET_FILE_DIR:FearEffectRe>/ai")
+    endif()
     target_compile_definitions(FearEffectRe PRIVATE FE_HAVE_WINDOW=1)
 endif()
 target_link_libraries(FearEffectRe PRIVATE fe_core ${FE_RECOMP_LIB})

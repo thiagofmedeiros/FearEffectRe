@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 
 #include "Machine.h"
 
@@ -61,7 +62,8 @@ std::string cardPath(const Machine& m, const std::string& name) {
     if (m.cardDir.empty() || colon == std::string::npos || name.rfind("bu0", 0) != 0) return {};
     std::string file;
     for (char ch : name.substr(colon + 1))
-        if (std::isalnum(static_cast<unsigned char>(ch)) || ch == '-' || ch == '_' || ch == '.') file.push_back(ch);
+        if (std::isalnum(static_cast<unsigned char>(ch)) || ch == '-' || ch == '_' || ch == '.' || ch == ' ')
+            file.push_back(ch);  // the card's own names, spaces included ("BASLUS-00920Fear 1")
     return file.empty() ? std::string{} : m.cardDir + "/" + file;
 }
 
@@ -104,10 +106,16 @@ void Machine::deliverEvent(Cpu& c, u32 cls, u32 spec) {
     for (auto& ev : events) {
         if (ev.status != 0x2000 || ev.cls != cls || ev.spec != spec) continue;
         if (ev.mode == 0x1000 && ev.func) {
-            u32 ra = c.r[31];
+            // the handler is game code: like the kernel, keep the caller's
+            // registers (a BIOS call's result in v0 must survive it)
+            u32 saved[32];
+            std::copy(std::begin(c.r), std::end(c.r), saved);
+            const u32 hi = c.hi, lo = c.lo;
             c.r[31] = 0xBFC0FFF0;
             call(c, ev.func);
-            c.r[31] = ra;
+            std::copy(std::begin(saved), std::end(saved), c.r);
+            c.hi = hi;
+            c.lo = lo;
         } else {
             ev.status = 0x4000;
         }
@@ -121,6 +129,12 @@ void Machine::biosCall(Cpu& c, u32 vector) {
     u32 id = (vector << 8) | fn;
     if (logBios) note("bios " + hex(id) + " a0=" + hex(a0) + " a1=" + hex(a1) + " ra=" + hex(c.r[31]));
 
+    // A memory card operation finished: the card library waits on the software
+    // event (SwCARD) for file reads and writes and on the hardware one (HwCARD)
+    // for the low-level calls, so both are signalled.
+    auto cardDone = [&](Cpu&, u32 spec) {
+        if (std::find(cardPending.begin(), cardPending.end(), spec) == cardPending.end()) cardPending.push_back(spec);
+    };
     auto eventIndex = [&](u32 handle) -> Event* {
         u32 i = handle & 0xFFFF;
         return (handle >> 24) == 0xF1 && i < events.size() ? &events[i] : nullptr;
@@ -294,9 +308,9 @@ void Machine::biosCall(Cpu& c, u32 vector) {
             size_t slot = 0;
             while (slot < cardFiles.size() && cardFiles[slot].open) ++slot;
             if (slot == cardFiles.size()) cardFiles.emplace_back();
-            cardFiles[slot] = CardFile{path, 0, true};
+            cardFiles[slot] = CardFile{path, 0, true, (a1 & 0x8000) != 0};
             v0 = static_cast<u32>(slot) + 2;
-            deliverEvent(c, 0xF0000011, 0x0004);
+            cardDone(c, 0x0004);
             break;
         }
         case 0xB033: {  // lseek(fd, offset, whence)
@@ -324,8 +338,10 @@ void Machine::biosCall(Cpu& c, u32 vector) {
                 out.write(buf.data(), static_cast<std::streamsize>(a2));
             }
             f.pos += a2;
-            v0 = a2;
-            deliverEvent(c, 0xF0000011, 0x0004);
+            // a no-wait request only reports that it was accepted (0); the
+            // card library then waits for the completion event
+            v0 = f.noWait ? 0 : a2;
+            cardDone(c, 0x0004);
             break;
         }
         case 0xB036:  // close
@@ -348,7 +364,7 @@ void Machine::biosCall(Cpu& c, u32 vector) {
             v0 = 0;
             size_t colon = pattern.find(':');
             if (cardDir.empty() || colon == std::string::npos || pattern.rfind("bu0", 0) != 0) {
-                deliverEvent(c, 0xF0000011, 0x0100);  // no card: timeout
+                cardDone(c, 0x0100);  // no card: timeout
                 break;
             }
             pattern = pattern.substr(colon + 1);
@@ -359,12 +375,12 @@ void Machine::biosCall(Cpu& c, u32 vector) {
             std::sort(cardListing.begin(), cardListing.end());
             v0 = fillDirEntry(*this, a1);
             // the card library waits for the hardware event when nothing matched
-            deliverEvent(c, 0xF0000011, 0x0004);
+            cardDone(c, 0x0004);
             break;
         }
         case 0xB043: v0 = fillDirEntry(*this, a0); break;  // nextfile(entry)
         case 0xB04A: case 0xB04B: case 0xB04C: break;  // InitCARD, StartCARD, StopCARD
-        case 0xB04E: deliverEvent(c, 0xF0000011, 0x0004); v0 = 1; break;  // _card_write
+        case 0xB04E: cardDone(c, 0x0004); v0 = 1; break;  // _card_write
         case 0xB050: v0 = 0; break;  // _new_card
         case 0xB056: v0 = 0x674; break;  // GetC0Table (libraries patch the kernel through it)
         case 0xB057: v0 = 0x874; break;  // GetB0Table

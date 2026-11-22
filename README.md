@@ -30,10 +30,10 @@ call.
 | Geometry engine (GTE) | All commands; not verified against hardware test vectors |
 | SPU | 24 voices, envelopes, XA audio; no reverb, noise or pitch modulation |
 | Controller | Digital pad in port 1 from the keyboard or an Xbox controller |
-| Memory card | Slot 1 as files in `saves/`; listing works, saving has not been exercised yet |
+| Memory card | Slot 1 as files in `saves/`; saving and loading a game work |
 | Overlays loaded from the disc | Run in the interpreter; not recompiled yet |
 
-Not verified yet: sound by ear, saving and loading a game, the disc change prompts, and
+Not verified yet: sound by ear, the disc change prompts, and
 anything past the first area. Changing disc mid-game does not crash, but the game has not
 been played to a real disc change.
 
@@ -49,6 +49,10 @@ cmake --build build
 Without `FE_DISC_IMAGE` only the interpreter is built. With MinGW, keep the compiler's
 `bin` directory on `PATH` when running the programs.
 
+For AI upscaling of the movies and backgrounds, add `-DFE_AI_DIR=<folder>` pointing at a
+folder prepared as described in [tools/ai/README.md](tools/ai/README.md); it is copied
+next to the program as `ai`.
+
 ## Running
 
 Start `build/FearEffectRe.exe` without arguments (double-click works) for the launcher:
@@ -57,9 +61,21 @@ fullscreen, then press Play. The choices are remembered in `FearEffectRe.ini` ne
 program. The game is drawn at that resolution: polygons, sprites and text are rasterised at a
 multiple of the console's 240 lines that fills the output (3x for 720p, 5x for 1080p, 6x
 for 1440p, 9x for 4K; `--scale N` overrides it), and shown as the largest 4:3 picture that
-fits. Movies and the streamed backgrounds are 320x160 video on the disc, so they are
-enlarged, not sharper. A size as large as
-the screen is shown borderless. With more than one monitor connected the launcher also
+fits. Movies and the streamed backgrounds are 320x160 video on the disc. The launcher's
+Video setting chooses how they are enlarged (`--video` on the command line):
+
+- **Original** (`original`): enlarged as they are, in large blocks.
+- **AI upscale, fast** (`fast`): a small Real-ESRGAN video model enlarges each picture 4x
+  on the graphics card while playing.
+- **AI upscale, best quality** (`best`): the large Real-ESRGAN x4plus model. It takes about
+  half a second per picture, so its results are kept in `hdcache/hdcache.pack` next to the program
+  and reused. Press **Build HD cache...** in the launcher (or run with `--build-hd-cache`)
+  to decode every movie and background frame of all four discs and enlarge them ahead
+  of time: several hours, and about 300 GB of disk (pictures are stored uncompressed so they load fast). It can be stopped and resumed. Pictures
+  missing from the cache are enlarged when first shown, which slows the game down.
+
+The AI modes need the `ai` folder (see Building) and a DirectX 12 graphics card. A size
+as large as the screen is shown borderless. With more than one monitor connected the launcher also
 asks which display to use (`--display N` on the command line, 1 is the primary).
 
 ```sh

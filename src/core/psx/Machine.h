@@ -160,10 +160,15 @@ struct Machine {
         std::string path;
         u32 pos = 0;
         bool open = false;
+        bool noWait = false;  // opened with 0x8000: read/write return 0 and finish with an event
     };
     std::vector<CardFile> cardFiles;
     std::vector<std::string> cardListing;
     size_t cardListPos = 0;
+    // Memory card operations finish "later", like the hardware: the
+    // completion events are delivered at the next frame, after the game has
+    // returned from the call and started waiting for them.
+    std::vector<u32> cardPending;  // event specs (EvSpIOE, EvSpTIMOUT, ...)
     std::string ttyLine;
     bool logBios = false;
     std::vector<std::string> log;                 // notable events, for the boot report

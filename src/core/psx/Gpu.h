@@ -3,14 +3,19 @@
 // hardware in edge rules and dithering.
 #pragma once
 
+#include <memory>
 #include <vector>
 
 #include "psx/Machine.h"
+#include "psx/VideoUpscaler.h"
 
 namespace fe {
 
 struct Gpu {
     Gpu() : vram(1024 * 512, 0) {}
+    ~Gpu();
+    Gpu(const Gpu&) = delete;
+    Gpu& operator=(const Gpu&) = delete;
 
     // Internal resolution multiplier (1..16). Above 1 every primitive is also
     // rasterised into `hires`, a copy of video memory `scale` times larger in
@@ -19,6 +24,10 @@ struct Gpu {
     void setScale(int factor);
     int scale = 1;
     std::vector<u16> hires;
+    // Optional: when set (and scale > 1), large uploads (the movie and
+    // background slices) are enlarged by it, and 15-bit textures drawn from
+    // them are sampled from the enlarged copy instead of video memory.
+    void setUpscaler(std::shared_ptr<VideoUpscaler> u);
     // The displayed part of the (scaled) frame buffer for 15-bit display
     // modes: `pixels` has `stride` pixels per row. Returns false in 24-bit
     // modes, where display() must be used.
@@ -64,6 +73,27 @@ private:
     void trackDisplay();
     int fbX1 = 1024, fbY1 = 512, fbX2 = -1, fbY2 = -1;
     u16 texel(int u, int v) const;
+
+    // Enlarged pictures: `video` is video memory at the render scale (like
+    // `hires`), valid where `videoState` is 2. State 1 marks pixels uploaded
+    // and not enlarged yet (done when first drawn); 0 is everything else.
+    struct VideoRect {
+        int x1, y1, x2, y2;
+        unsigned picture;  // slices uploaded back to back belong to one picture
+    };
+    unsigned videoPicture = 0;
+    bool videoBreak = true;  // a draw happened since the last slice: the next one starts a picture
+    void videoUploaded(int x, int y, int w, int h);
+    void videoInvalidate(int x, int y, int w, int h);
+    void videoFlush(int x1, int y1, int x2, int y2);  // enlarges the pictures touching this area
+    std::vector<u8> videoRgb, videoOut;  // the picture being enlarged, before and after
+    // A 15-bit texel at native position (fixed point 16.16, absolute in video
+    // memory) from the enlarged copy; false where there is none.
+    bool videoTexel(s64 x, s64 y, u16& out) const;
+    std::shared_ptr<VideoUpscaler> upscaler;
+    std::vector<u16> video;
+    std::vector<u8> videoState;
+    std::vector<VideoRect> videoDirty;
     void plot(int x, int y, u16 color, bool semi);
     void setTexpage(u32 bits);
 

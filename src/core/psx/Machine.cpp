@@ -161,6 +161,14 @@ void Machine::onSlice(Cpu& c) {
         ++frame;
         raise(kIrqVblank);
         if (onVblank) onVblank();
+        if (!cardPending.empty()) {
+            std::vector<u32> specs;
+            specs.swap(cardPending);
+            for (u32 spec : specs) {
+                deliverEvent(c, 0xF0000011, spec);
+                deliverEvent(c, 0xF4000001, spec);
+            }
+        }
         if (padStarted) {
             for (int port = 0; port < 2; ++port) {
                 if (!padBuf[port] || padLen[port] < 4) continue;

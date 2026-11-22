@@ -53,10 +53,11 @@ std::vector<Display> listDisplays() {
 
 namespace {
 
-enum : int { kIdPath = 101, kIdBrowse, kIdResolution, kIdFullscreen, kIdPlay, kIdQuit, kIdDisplay };
+enum : int { kIdPath = 101, kIdBrowse, kIdResolution, kIdFullscreen, kIdPlay, kIdQuit, kIdDisplay, kIdVideo, kIdBuildCache };
 
 struct State {
     HWND path = nullptr, combo = nullptr, full = nullptr, display = nullptr;
+    HWND video = nullptr;
     bool play = false, done = false;
 };
 
@@ -120,6 +121,34 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     st->done = true;
                     return 0;
                 }
+                case kIdBuildCache: {
+                    std::wstring disc = windowText(st->path);
+                    std::error_code ec;
+                    if (!std::filesystem::is_regular_file(disc, ec)) {
+                        MessageBoxW(hwnd, L"Choose the disc 1 image of Fear Effect (USA) first.", L"FearEffectRe",
+                                    MB_OK | MB_ICONINFORMATION);
+                        return 0;
+                    }
+                    if (MessageBoxW(hwnd,
+                                    L"This decodes every movie and background frame on all four discs found next to "
+                                    L"disc 1 and enlarges each with the best AI model into the file hdcache/hdcache.pack.\n\n"
+                                    L"It takes several hours on a fast graphics card and needs about 300 GB of disk "
+                                    L"space. It can be stopped by closing its window and resumed later.\n\nStart now?",
+                                    L"Build HD cache", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK)
+                        return 0;
+                    wchar_t exe[MAX_PATH];
+                    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+                    std::wstring cmd = L"\"" + std::wstring(exe) + L"\" \"" + disc + L"\" --build-hd-cache";
+                    STARTUPINFOW si{};
+                    si.cb = sizeof si;
+                    PROCESS_INFORMATION pi{};
+                    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE, nullptr,
+                                       nullptr, &si, &pi)) {
+                        CloseHandle(pi.hThread);
+                        CloseHandle(pi.hProcess);
+                    }
+                    return 0;
+                }
                 case kIdQuit: st->done = true; return 0;
                 default: break;
             }
@@ -145,6 +174,8 @@ bool runLauncher(LaunchSettings& settings) {
     std::vector<Display> displays = listDisplays();
     int disp = static_cast<int>(GetPrivateProfileIntW(L"launcher", L"display", settings.display, ini.c_str()));
     if (disp < 0 || disp >= static_cast<int>(displays.size())) disp = 0;
+    int vid = static_cast<int>(GetPrivateProfileIntW(L"launcher", L"video", settings.video, ini.c_str()));
+    if (vid < 0 || vid > 2) vid = 1;
     // the display row is only there when there is a choice to make
     const int extra = displays.size() > 1 ? 32 : 0;
 
@@ -158,7 +189,7 @@ bool runLauncher(LaunchSettings& settings) {
     RegisterClassW(&wc);
 
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT r{0, 0, 520, 190 + extra};
+    RECT r{0, 0, 520, 222 + extra};
     AdjustWindowRect(&r, style, FALSE);
     int w = r.right - r.left, h = r.bottom - r.top;
     HWND hwnd = CreateWindowW(wc.lpszClassName, L"FearEffectRe", style, (GetSystemMetrics(SM_CXSCREEN) - w) / 2,
@@ -192,9 +223,17 @@ bool runLauncher(LaunchSettings& settings) {
         }
         SendMessageW(st.display, CB_SETCURSEL, static_cast<WPARAM>(disp), 0);
     }
-    make(L"STATIC", L"The picture keeps its 4:3 shape inside the chosen size.", 0, 16, 112 + extra, 480, 18, 0);
-    make(L"BUTTON", L"Play", WS_TABSTOP | BS_DEFPUSHBUTTON, 314, 146 + extra, 92, 30, kIdPlay);
-    make(L"BUTTON", L"Quit", WS_TABSTOP, 412, 146 + extra, 92, 30, kIdQuit);
+    make(L"STATIC", L"Video:", 0, 16, 112 + extra, 80, 18, 0);
+    st.video = make(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, 100, 108 + extra, 404, 200, kIdVideo);
+    for (const wchar_t* label : {L"Original (movies and backgrounds enlarged as they are)",
+                                 L"AI upscale, fast (live on the graphics card)",
+                                 L"AI upscale, best quality (builds a local HD cache; slow the first time)"})
+        SendMessageW(st.video, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
+    SendMessageW(st.video, CB_SETCURSEL, static_cast<WPARAM>(vid), 0);
+    make(L"STATIC", L"The picture keeps its 4:3 shape inside the chosen size.", 0, 16, 144 + extra, 480, 18, 0);
+    make(L"BUTTON", L"Build HD cache...", WS_TABSTOP, 16, 178 + extra, 140, 30, kIdBuildCache);
+    make(L"BUTTON", L"Play", WS_TABSTOP | BS_DEFPUSHBUTTON, 314, 178 + extra, 92, 30, kIdPlay);
+    make(L"BUTTON", L"Quit", WS_TABSTOP, 412, 178 + extra, 92, 30, kIdQuit);
 
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&st));
     ShowWindow(hwnd, SW_SHOW);
@@ -227,6 +266,9 @@ bool runLauncher(LaunchSettings& settings) {
         if (settings.display < 0) settings.display = 0;
         WritePrivateProfileStringW(L"launcher", L"fullscreen", settings.fullscreen ? L"1" : L"0", ini.c_str());
         WritePrivateProfileStringW(L"launcher", L"display", std::to_wstring(settings.display).c_str(), ini.c_str());
+        settings.video = static_cast<int>(SendMessageW(st.video, CB_GETCURSEL, 0, 0));
+        if (settings.video < 0 || settings.video > 2) settings.video = 1;
+        WritePrivateProfileStringW(L"launcher", L"video", std::to_wstring(settings.video).c_str(), ini.c_str());
     }
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
     DestroyWindow(hwnd);

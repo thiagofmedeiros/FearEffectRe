@@ -19,6 +19,7 @@
 #include "psx/Machine.h"
 #if FE_HAVE_WINDOW
 #include "Launcher.h"
+#include "VideoAI.h"
 #include "Window.h"
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -115,7 +116,9 @@ int usage() {
                  "F2-F5 insert disc 1-4. Saves go to ./saves (--saves dir, or --saves none for no memory card).\n"
                  "--resolution original|720p|1080p|1440p|4k and --fullscreen set the output size,\n"
                  "--display N picks the monitor (1 = primary),\n"
-                 "--scale N sets the internal resolution multiplier (default: enough for the output height).\n"
+                 "--scale N sets the internal resolution multiplier (default: enough for the output height),\n"
+                 "--video original|fast|best: AI upscaling of movies and backgrounds (best keeps an HD cache),\n"
+                 "--build-hd-cache enlarges every movie and background frame of all discs into the HD cache (hours).\n"
                  "Run without arguments for the launcher.\n");
     return 2;
 }
@@ -127,6 +130,9 @@ int main(int argc, char** argv) {
     bool fullscreen = false, viaLauncher = false;
     int display = 0;  // index into app::listDisplays()
     int scale = 0;    // internal resolution multiplier; 0 = chosen from the output height
+#if FE_HAVE_WINDOW
+    app::VideoMode videoMode = app::VideoMode::Original;
+#endif
     std::string discPath;
 #if FE_HAVE_WINDOW
     SetProcessDPIAware();  // window sizes are real pixels
@@ -137,6 +143,7 @@ int main(int argc, char** argv) {
         resolution = launch.resolution;
         fullscreen = launch.fullscreen;
         display = launch.display;
+        videoMode = static_cast<app::VideoMode>(launch.video);
         viaLauncher = true;
         FreeConsole();  // started by double-click: no need for the console window
     }
@@ -144,6 +151,7 @@ int main(int argc, char** argv) {
     if (argc < 2) return usage();
 #endif
     if (!viaLauncher) discPath = argv[1];
+    bool buildHdCache = false;
     unsigned frames = 0;  // 0 = play in a window until it is closed
     size_t maxLog = 80;
     bool interpreterOnly = false, logBios = false;
@@ -170,6 +178,9 @@ int main(int argc, char** argv) {
             if (!r) return usage();
             resolution = static_cast<int>(r - app::kResolutions);
         }
+        else if (a == "--video" && i + 1 < argc) {
+            if (!app::parseVideoMode(argv[++i], videoMode)) return usage();
+        }
 #endif
         else if (a == "--swap" && i + 1 < argc) swapScript = argv[++i];
         else if (a == "--saves" && i + 1 < argc) savesDir = argv[++i];
@@ -181,8 +192,24 @@ int main(int argc, char** argv) {
         else if (a == "--dump" && i + 1 < argc) dumpPath = argv[++i];
         else if (a == "--dump-vram" && i + 1 < argc) vramPath = argv[++i];
         else if (a == "--log-cd" && i + 1 < argc) logCd = std::atoi(argv[++i]);
+        else if (a == "--build-hd-cache") buildHdCache = true;
         else return usage();
     }
+#if FE_HAVE_WINDOW
+    if (buildHdCache) {
+        // every disc of the set that is found next to the given one
+        std::vector<std::string> discs{discPath};
+        for (int n = 2; n <= 4; ++n) {
+            std::string other = discPathFor(discPath, n);
+            std::error_code ec;
+            if (!other.empty() && std::filesystem::exists(other, ec)) discs.push_back(other);
+        }
+        wchar_t exePath[MAX_PATH];
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
+        return app::buildHdCache(discs, exeDir / "ai", exeDir / "hdcache");
+    }
+#endif
 
     try {
         auto discPtr = std::make_shared<fe::DiscImage>(discPath);
@@ -212,6 +239,25 @@ int main(int argc, char** argv) {
 #endif
         if (scale < 1) scale = 1;
         m.gpu->setScale(scale);
+#if FE_HAVE_WINDOW
+        if (videoMode != app::VideoMode::Original && scale > 1) {
+            wchar_t exePath[MAX_PATH];
+            GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+            std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
+            std::string error;
+            auto up = app::createAiUpscaler(videoMode, exeDir / "ai", exeDir / "hdcache", error);
+            if (up) {
+                m.gpu->setUpscaler(up);
+                std::printf("video   AI upscaling (%s)\n", app::videoModeId(videoMode));
+            } else {
+                std::printf("video   AI upscaling is off: %s\n", error.c_str());
+                if (viaLauncher) {
+                    std::string text = "AI upscaling is not available, the game runs without it.\n\n" + error;
+                    MessageBoxA(nullptr, text.c_str(), "FearEffectRe", MB_OK | MB_ICONWARNING);
+                }
+            }
+        }
+#endif
         if (savesDir != "none") {
             std::error_code ec;
             std::filesystem::create_directories(savesDir, ec);
