@@ -70,7 +70,7 @@ else()
     set(FE_HAVE_RECOMP 0)
 endif()
 
-add_executable(FearEffectRe src/app/main.cpp)
+add_executable(FearEffectRe src/app/main.cpp src/app/ModernControls.cpp)
 if(WIN32)
     target_sources(FearEffectRe PRIVATE src/app/Window.cpp src/app/Launcher.cpp src/app/VideoAI.cpp src/app/StrVideo.cpp)
     target_include_directories(FearEffectRe PRIVATE third_party/onnxruntime/include)

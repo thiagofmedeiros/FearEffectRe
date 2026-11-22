@@ -372,6 +372,13 @@ void gteCtc2(Cpu& c, u32 reg, u32 value) {
         if (value & 0x7F87E000) value |= 0x80000000u;
     }
     c.gteCtrl[reg] = value;
+    // R33 is the last of the rotation registers a game writes
+    if (reg == 4 && c.m && c.m->recordRotations && c.m->rotations.size() < 512) {
+        const u32* k = c.gteCtrl;
+        auto lo = [](u32 v) { return static_cast<s16>(v & 0xFFFF); };
+        auto hi = [](u32 v) { return static_cast<s16>(v >> 16); };
+        c.m->rotations.push_back({lo(k[0]), hi(k[0]), lo(k[1]), hi(k[1]), lo(k[2]), hi(k[2]), lo(k[3]), hi(k[3]), lo(k[4])});
+    }
 }
 
 void gteCommand(Cpu& c, u32 word) { Gte(c).run(word); }

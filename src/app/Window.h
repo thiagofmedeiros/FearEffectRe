@@ -25,6 +25,9 @@ public:
     // Pad buttons held right now, one bit per button (1 = pressed), in the
     // PlayStation's bit order.
     std::uint16_t buttons() const;
+    // Left stick of the Xbox controller, -1..1 with up positive, when it is
+    // pushed past the dead zone (window focused); false otherwise.
+    bool stick(float& x, float& y) const;
     // A frame in which the picture did not change: handles window messages
     // and waits for the next frame time without drawing.
     bool idle();

@@ -323,6 +323,17 @@ std::uint16_t Window::buttons() const {
     return b;
 }
 
+bool Window::stick(float& x, float& y) const {
+    if (!impl_->xinput || GetForegroundWindow() != impl_->hwnd) return false;
+    PadState pad{};
+    if (impl_->xinput(impl_->padIndex, &pad) != ERROR_SUCCESS) return false;
+    const float fx = pad.lx / 32767.0f, fy = pad.ly / 32767.0f;
+    if (fx * fx + fy * fy < 0.37f * 0.37f) return false;  // same dead zone as the stick-as-D-pad
+    x = fx;
+    y = fy;
+    return true;
+}
+
 bool Window::pump() {
     MSG msg;
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {

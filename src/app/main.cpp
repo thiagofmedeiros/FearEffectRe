@@ -17,6 +17,7 @@
 #include "psx/Mdec.h"
 #include "psx/Spu.h"
 #include "psx/Machine.h"
+#include "ModernControls.h"
 #if FE_HAVE_WINDOW
 #include "Launcher.h"
 #include "VideoAI.h"
@@ -118,6 +119,7 @@ int usage() {
                  "--display N picks the monitor (1 = primary),\n"
                  "--scale N sets the internal resolution multiplier (default: enough for the output height),\n"
                  "--video original|fast|best: AI upscaling of movies and backgrounds (best keeps an HD cache),\n"
+                 "--modern: the stick or D-pad moves the character in that direction on screen (no tank controls),\n"
                  "--build-hd-cache enlarges every movie and background frame of all discs into the HD cache (hours).\n"
                  "Run without arguments for the launcher.\n");
     return 2;
@@ -130,6 +132,7 @@ int main(int argc, char** argv) {
     bool fullscreen = false, viaLauncher = false;
     int display = 0;  // index into app::listDisplays()
     int scale = 0;    // internal resolution multiplier; 0 = chosen from the output height
+    bool modern = false;  // screen-relative movement instead of tank controls
 #if FE_HAVE_WINDOW
     app::VideoMode videoMode = app::VideoMode::Original;
 #endif
@@ -144,6 +147,7 @@ int main(int argc, char** argv) {
         fullscreen = launch.fullscreen;
         display = launch.display;
         videoMode = static_cast<app::VideoMode>(launch.video);
+        modern = launch.modern;
         viaLauncher = true;
         FreeConsole();  // started by double-click: no need for the console window
     }
@@ -156,13 +160,14 @@ int main(int argc, char** argv) {
     size_t maxLog = 80;
     bool interpreterOnly = false, logBios = false;
     int logCd = 0, logSio = 0;
-    std::string dumpPath, vramPath, shotDir, inputScript, wavPath, swapScript;
+    std::string dumpPath, vramPath, ramDir, shotDir, inputScript, wavPath, swapScript;
     std::string savesDir = "saves";  // memory card in slot 1; "none" removes the card
     std::vector<fe::s16> wav;
     double audioEnergy = 0;
     fe::u64 audioSamples = 0;
     int audioPeak = 0;
     unsigned shotEvery = 300;
+    fe::u64 ramFrom = 0;  // first frame --ram writes
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--frames" && i + 1 < argc) frames = static_cast<unsigned>(std::atoi(argv[++i]));
@@ -187,12 +192,15 @@ int main(int argc, char** argv) {
         else if (a == "--wav" && i + 1 < argc) wavPath = argv[++i];
         else if (a == "--log-sio" && i + 1 < argc) logSio = std::atoi(argv[++i]);
         else if (a == "--shots" && i + 1 < argc) shotDir = argv[++i];
+        else if (a == "--ram" && i + 1 < argc) ramDir = argv[++i];
+        else if (a == "--ram-from" && i + 1 < argc) ramFrom = static_cast<fe::u64>(std::atoll(argv[++i]));
         else if (a == "--every" && i + 1 < argc) shotEvery = static_cast<unsigned>(std::atoi(argv[++i]));
         else if (a == "--input" && i + 1 < argc) inputScript = argv[++i];
         else if (a == "--dump" && i + 1 < argc) dumpPath = argv[++i];
         else if (a == "--dump-vram" && i + 1 < argc) vramPath = argv[++i];
         else if (a == "--log-cd" && i + 1 < argc) logCd = std::atoi(argv[++i]);
         else if (a == "--build-hd-cache") buildHdCache = true;
+        else if (a == "--modern") modern = true;
         else return usage();
     }
 #if FE_HAVE_WINDOW
@@ -331,7 +339,10 @@ int main(int argc, char** argv) {
             swapDisc = std::atoi(swapScript.substr(colon + 1).c_str());
         }
         fe::u64 lastActivity = ~0ull;
+        app::ModernControls modernControls;
         m.onVblank = [&]() {
+            bool analog = false;
+            float stickX = 0, stickY = 0;
             fe::u16 held = 0;
             if (m.frame == swapFrame) insertDisc(swapDisc);
             for (fe::s16 v : m.audio) {
@@ -360,6 +371,7 @@ int main(int argc, char** argv) {
                 }
                 if (!open) throw fe::Stop{"window closed"};
                 held |= window->buttons();
+                analog = window->stick(stickX, stickY);
                 if (int disc = window->discRequest()) insertDisc(disc);
                 window->audio(m.audio);
             }
@@ -367,7 +379,17 @@ int main(int argc, char** argv) {
             m.audio.clear();
             for (const auto& p : presses)
                 if (m.frame >= p.frame && m.frame < p.frame + p.length) held |= p.mask;
+            if (modern) held = modernControls.apply(m, held, analog, stickX, stickY);
             m.padState = static_cast<fe::u16>(~held);
+            // --ram <dir>: main memory at the same frames as the screenshots (finding game variables)
+            if (!ramDir.empty() && shotEvery && m.frame >= ramFrom && m.frame % shotEvery == 0) {
+                char name[32];
+                std::snprintf(name, sizeof name, "/f%06llu.ram", static_cast<unsigned long long>(m.frame));
+                if (FILE* f = std::fopen((ramDir + name).c_str(), "wb")) {
+                    std::fwrite(m.ram.get(), 1, fe::kRamSize, f);
+                    std::fclose(f);
+                }
+            }
             if (!shotDir.empty() && shotEvery && m.frame % shotEvery == 0) {
                 std::vector<fe::u8> rgb;
                 int w = 0, h = 0;

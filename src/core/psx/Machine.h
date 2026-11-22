@@ -138,6 +138,11 @@ struct Machine {
     bool inException = false;
 
     std::function<void()> onVblank;  // called once per frame, before the interrupt is delivered
+    // Rotation matrices the game loaded into the GTE (row-major, 4096 = 1.0),
+    // collected only while `recordRotations` is set; the reader clears the
+    // list. The modern controls look for the camera among them.
+    bool recordRotations = false;
+    std::vector<std::array<s16, 9>> rotations;
     void raise(u32 irq) { iStat |= irq; }
     // Current time including the part of the slice already executed.
     u64 now() const { return clock + static_cast<u64>(sliceLen - cpu.cycles); }

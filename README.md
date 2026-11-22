@@ -90,6 +90,13 @@ start and select, and the d-pad or left stick moves. F2 to F5 insert disc 1 to 4
 their `(Disc N)` name). Saves are kept in `saves/`; use `--saves dir` to choose another
 folder or `--saves none` to play without a memory card.
 
+**Modern movement** (launcher checkbox, `--modern`) replaces the tank controls: push the
+stick or D-pad towards where you want to go on the screen and the character turns that way
+and walks. Pause and other menus keep the normal D-pad, and anywhere the program cannot
+tell where the camera is, the original controls stay in effect. It works by reading the
+character's facing angle and the camera from the running game, so it has only been
+checked in the first area of disc 1.
+
 For testing without a window:
 
 ```sh
@@ -100,7 +107,8 @@ build/FearEffectRe disc.cue --frames 3000 --input "500:start,1300:start,2000:up*
 console output, calls and devices that are not implemented, and the busiest hardware
 registers. `--input` presses buttons at given frames (`*n` holds for n frames), `--shots`
 writes a PNG every `--every` frames, `--dump` and `--dump-vram` write the last picture and
-video memory, `--wav` writes the sound, `--swap frame:disc` changes disc. `--interpreter`
+video memory, `--ram dir` writes main memory next to each screenshot (from frame
+`--ram-from N`; for finding game variables), `--wav` writes the sound, `--swap frame:disc` changes disc. `--interpreter`
 runs without the recompiled code; `--log-bios`, `--log-cd N` and `--log-sio N` trace calls
 and register accesses.
 

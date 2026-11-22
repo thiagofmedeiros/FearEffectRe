@@ -32,6 +32,7 @@ struct LaunchSettings {
     bool fullscreen = false;
     int display = 0;     // index into listDisplays()
     int video = 1;       // movies and backgrounds: 0 original, 1 AI fast, 2 AI best (cached)
+    bool modern = false; // screen-relative movement instead of tank controls
 };
 
 // Returns false when the dialog was closed without pressing Play.
