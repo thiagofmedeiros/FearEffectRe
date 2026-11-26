@@ -108,6 +108,44 @@ A few cheats change the game's code rather than its data (Infinite Ammo, Stop Ti
 The recompiled code never reads the game's instructions back from memory, so the functions
 they change run in the interpreter instead while the cheat is on, which makes them slower.
 
+### Precise 3D models
+
+The PlayStation rounds every corner of a 3D model to a whole pixel of its 320x240 picture, so
+models wobble and shimmer as they move; drawn at a higher resolution, the rounding shows even
+more. With **Precise 3D models** (`--precise`) the corners are placed where they really are in
+the high-resolution picture. The game itself sees nothing different.
+
+It works like PGXP in other emulators: when the geometry engine projects a point, the exact
+position is kept next to the rounded one; when the game stores that point to memory and the
+graphics chip later reads that same word, the exact position goes with it. A model is built
+from parts transformed one by one, and where two parts meet, the same point comes out slightly
+differently from each; points that round to the same pixel in a frame therefore share one
+exact position, so the parts stay joined.
+
+### Smooth 60 fps
+
+The game draws a new picture every second frame: 30 a second. With **Smooth 60 fps**
+(`--smooth`, which also turns on precise 3D models) a picture is drawn in between each two of
+the game's, with every 3D polygon halfway between where it was in the one before and where it
+is in the next. Each picture the game draws is recorded: the frame buffer as it is just before
+the first 3D polygon (the background and the 2D parts are already there), then every drawing
+command after that. The in-between frame draws the newer picture again from that point, with
+each polygon moved halfway back to the same polygon of the picture before (the same kind of
+polygon with the same texture, nearest to it). When too few polygons match, at a camera cut or
+a new screen, the game's own picture is shown instead. Movies and menus are shown as they are.
+
+To be halfway between two pictures, the in-between frame has to wait for the second, so the
+game's pictures are shown 1/60 of a second later than without it.
+
+### Fixes for the game's own bugs
+
+The movie and background decoder of the game can be told to carry on with a picture it has
+already finished, from a stale position, writing over memory that has been reused since
+(found by project-helix, whose fix this is). The fix leaves the decoder's state as "finished"
+whenever a picture is done, so a stale "carry on" does nothing. In the first 14,000 frames
+(boot, intro, opening and the first area) the game never does this, but other places may.
+`--no-game-fixes` leaves it as it is; the report at the end says how often it happened.
+
 ### Save states
 
 F6 saves the whole game at the moment you press it and F7 brings it back, anywhere, not only

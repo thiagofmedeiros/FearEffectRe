@@ -216,9 +216,15 @@ void Machine::runDma(int ch) {
                     u32 n = head >> 24;
                     gp0Words += n;
                     for (u32 i = 1; i <= n; ++i) {
+                        const u32 at = (addr + 4 * i) & 0x1FFFFC;
                         u32 w;
-                        std::memcpy(&w, ram.get() + ((addr + 4 * i) & 0x1FFFFC), 4);
-                        gpu->gp0(w);
+                        std::memcpy(&w, ram.get() + at, 4);
+                        if (const PreciseWord* p = pgxp ? preciseAt(at, w) : nullptr) {
+                            ++pgxpUsed;
+                            gpu->gp0Precise(w, p->x, p->y);
+                        } else {
+                            gpu->gp0(w);
+                        }
                     }
                     if (head & 0x800000) break;
                     addr = head & 0x1FFFFC;

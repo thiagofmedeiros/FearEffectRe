@@ -1,6 +1,7 @@
 #include "Gpu.h"
 
 #include <algorithm>
+#include <cmath>
 #include <condition_variable>
 #include <cstring>
 #include <cstdlib>
@@ -117,13 +118,13 @@ void Gpu::setUpscaler(std::shared_ptr<VideoUpscaler> u) {
 Gpu::~Gpu() = default;
 
 void Gpu::videoInvalidate(int x, int y, int w, int h) {
-    if (videoState.empty()) return;
+    if (videoState.empty() || ghost) return;
     for (int j = 0; j < h; ++j)
         for (int i = 0; i < w; ++i) videoState[static_cast<size_t>((y + j) & 511) * 1024 + ((x + i) & 1023)] = 0;
 }
 
 void Gpu::videoUploaded(int x, int y, int w, int h) {
-    if (videoState.empty() || scale == 1) return;
+    if (videoState.empty() || scale == 1 || ghost) return;
     // pictures come as slices 16 pixels wide; small uploads are textures and CLUTs
     if (w * h < 1024 || x + w > 1024 || y + h > 512) {
         videoInvalidate(x, y, w, h);
@@ -314,9 +315,22 @@ void Gpu::triangleHi(Vertex a, Vertex b, Vertex c, bool textured, bool gouraud, 
     if (std::max({a.x, b.x, c.x}) - std::min({a.x, b.x, c.x}) > 1023) return;
     if (std::max({a.y, b.y, c.y}) - std::min({a.y, b.y, c.y}) > 511) return;
     const int S = scale;
+    // A triangle placed at precise positions no longer lines up with its
+    // texture to the texel: keep the texture coordinates inside its own
+    // range, or the edges pick up the texels next to it (lines across faces).
+    const bool precise = a.hx != kNoPrecise || b.hx != kNoPrecise || c.hx != kNoPrecise;
+    const s32 uLo = std::min({a.u, b.u, c.u}) << 16, vLo = std::min({a.v, b.v, c.v}) << 16;
+    const s32 uHi = std::max(uLo, (std::max({a.u, b.u, c.u}) << 16) - 1), vHi = std::max(vLo, (std::max({a.v, b.v, c.v}) << 16) - 1);
+    auto clampU = [&](s32 u) { return precise ? std::clamp(u, uLo, uHi) : u; };
+    auto clampV = [&](s32 v) { return precise ? std::clamp(v, vLo, vHi) : v; };
     for (Vertex* v : {&a, &b, &c}) {
-        v->x *= S;
-        v->y *= S;
+        if (v->hx != kNoPrecise) {
+            v->x = v->hx;
+            v->y = v->hy;
+        } else {
+            v->x *= S;
+            v->y *= S;
+        }
     }
     s64 area = static_cast<s64>(b.x - a.x) * (c.y - a.y) - static_cast<s64>(b.y - a.y) * (c.x - a.x);
     if (area == 0) return;
@@ -422,11 +436,12 @@ void Gpu::triangleHi(Vertex a, Vertex b, Vertex c, bool textured, bool gouraud, 
             // 15-bit texture drawn as it is: the streamed backgrounds
             s32 u = start(pu, y, half) + pu.step * skip, v = start(pv, y, half) + pv.step * skip;
             for (int x = xs; x <= xe; ++x, ++out, u += pu.step, v += pv.step) {
-                const int ty = (tpy + ((v >> 16) & 255)) & 511, tx = (tpx + ((u >> 16) & 255)) & 1023;
+                const s32 cu = clampU(u), cv = clampV(v);
+                const int ty = (tpy + ((cv >> 16) & 255)) & 511, tx = (tpx + ((cu >> 16) & 255)) & 1023;
                 u16 t = vram[static_cast<size_t>(ty) * 1024 + tx];
                 if (!t) continue;
                 u16 e;
-                if (vid && videoTexel((static_cast<s64>(tx) << 16) | (u & 0xFFFF), (static_cast<s64>(ty) << 16) | (v & 0xFFFF), e))
+                if (vid && videoTexel((static_cast<s64>(tx) << 16) | (cu & 0xFFFF), (static_cast<s64>(ty) << 16) | (cv & 0xFFFF), e))
                     t = static_cast<u16>((t & 0x8000) | e);
                 *out = t | setMask;
             }
@@ -443,7 +458,7 @@ void Gpu::triangleHi(Vertex a, Vertex b, Vertex c, bool textured, bool gouraud, 
             // has its texture-window and depth decisions made once
             s32 u = start(pu, y, half) + pu.step * skip, v = start(pv, y, half) + pv.step * skip;
             for (int x = xs; x <= xe; ++x, ++out, u += pu.step, v += pv.step) {
-                const int tu = (((u >> 16) & winKeepX) | winSetX) & 255, tv = (((v >> 16) & winKeepY) | winSetY) & 255;
+                const int tu = (((clampU(u) >> 16) & winKeepX) | winSetX) & 255, tv = (((clampV(v) >> 16) & winKeepY) | winSetY) & 255;
                 const u16* texRow = &vram[static_cast<size_t>((tpy + tv) & 511) * 1024];
                 u16 t;
                 if (depth == 0) t = clut[(texRow[(tpx + tu / 4) & 1023] >> ((tu & 3) * 4)) & 15];
@@ -468,7 +483,7 @@ void Gpu::triangleHi(Vertex a, Vertex b, Vertex c, bool textured, bool gouraud, 
                 plotHi(x, y, to15(cr, cg, cb), semi);
                 continue;
             }
-            u16 t = texel(u >> 16, v >> 16);
+            u16 t = texel(clampU(u) >> 16, clampV(v) >> 16);
             if (!t) continue;
             if (!raw) {
                 int tr = clamp255(((t & 31) * cr) >> 4), tg = clamp255((((t >> 5) & 31) * cg) >> 4);
@@ -617,7 +632,7 @@ void Gpu::plot(int x, int y, u16 color, bool semi) {
         b = std::clamp(b, 0, 31);
         color = static_cast<u16>((color & 0x8000) | r | (g << 5) | (b << 10));
     }
-    if (!videoState.empty()) videoState[static_cast<size_t>(y) * 1024 + x] = 0;
+    if (!videoState.empty() && !ghost) videoState[static_cast<size_t>(y) * 1024 + x] = 0;
     d = color | setMask;
 }
 
@@ -723,9 +738,32 @@ void Gpu::polygon() {
         v[k].r = color & 255;
         v[k].g = (color >> 8) & 255;
         v[k].b = (color >> 16) & 255;
+        const size_t at = i;
+        ++vertices;
         u32 xy = cmd[i++];
         v[k].x = sext11(xy) + offX;
         v[k].y = sext11(xy >> 16) + offY;
+        // All vertices that round to the same native pixel in a frame share
+        // one precise position: the first one drawn there. A model is built
+        // from parts transformed one by one, so where two parts meet the same
+        // point is computed twice with slightly different results; rounded
+        // they landed on one pixel, precise they would leave a crack.
+        const u32 key = (static_cast<u32>(v[k].x) & 0xFFFF) | (static_cast<u32>(v[k].y) << 16);
+        const bool hasPrecise = at < cmdPrecise.size() && !std::isnan(cmdPrecise[at][0]);
+        if (hasPrecise || !preciseCache.empty()) {
+            auto it = preciseCache.find(key);
+            if (it != preciseCache.end() && it->second.frame + 1 >= frameTag) {
+                v[k].hx = it->second.x;
+                v[k].hy = it->second.y;
+                if (hasPrecise) ++preciseVertices;
+            } else if (hasPrecise) {
+                v[k].hx = static_cast<int>(std::lround((cmdPrecise[at][0] + offX) * scale));
+                v[k].hy = static_cast<int>(std::lround((cmdPrecise[at][1] + offY) * scale));
+                ++preciseVertices;
+                if (preciseCache.size() > 65536) preciseCache.clear();
+                preciseCache[key] = {v[k].hx, v[k].hy, frameTag};
+            }
+        }
         if (textured) {
             u32 uv = cmd[i++];
             v[k].u = uv & 255;
@@ -738,8 +776,31 @@ void Gpu::polygon() {
             }
         }
     }
-    triangle(v[0], v[1], v[2], textured, gouraud, semi, raw);
-    if (quad) triangle(v[1], v[2], v[3], textured, gouraud, semi, raw);
+    if (recordPasses && !passes.empty() && !passes.back().snapped && !passes.back().done && scale > 1) {
+        bool is3d = false;
+        for (int k = 0; k < n; ++k) is3d = is3d || v[k].hx != kNoPrecise;
+        if (is3d) {
+            Pass& pass = passes.back();
+            const int S = scale, x1 = std::max(pass.x1, 0), y1 = std::max(pass.y1, 0);
+            const int x2 = std::min(pass.x2, 1023), y2 = std::min(pass.y2, 511);
+            if (x2 >= x1 && y2 >= y1) {
+                const size_t w = static_cast<size_t>(x2 - x1 + 1) * S, stride = static_cast<size_t>(1024) * S;
+                pass.pixels.resize(w * static_cast<size_t>(y2 - y1 + 1) * S);
+                for (int y = y1 * S; y < (y2 + 1) * S; ++y)
+                    std::copy_n(&hires[static_cast<size_t>(y) * stride + static_cast<size_t>(x1) * S], w,
+                                &pass.pixels[static_cast<size_t>(y - y1 * S) * w]);
+                pass.regs = saveRegs();
+                pass.snapped = true;
+                // this command's words came before the snapshot: they start the record
+                for (size_t i = 0; i < cmd.size(); ++i)
+                    recordWord(cmd[i], i < cmdPrecise.size() ? cmdPrecise[i][0] : kNan, i < cmdPrecise.size() ? cmdPrecise[i][1] : kNan);
+            }
+        }
+    }
+    if (!ghost) {
+        triangle(v[0], v[1], v[2], textured, gouraud, semi, raw);
+        if (quad) triangle(v[1], v[2], v[3], textured, gouraud, semi, raw);
+    }
     if (scale > 1) {
         triangleHi(v[0], v[1], v[2], textured, gouraud, semi, raw);
         if (quad) triangleHi(v[1], v[2], v[3], textured, gouraud, semi, raw);
@@ -852,6 +913,8 @@ int Gpu::commandLength(u32 word) const {
 }
 
 void Gpu::gp0(u32 word) {
+    if (recordPasses && !passes.empty() && passes.back().snapped && !passes.back().done)
+        recordWord(word, pendingPrecise ? pendingX : kNan, pendingY);
     if (loading) {
         for (int k = 0; k < 2; ++k) {
             u16 px = static_cast<u16>(word >> (16 * k));
@@ -886,7 +949,21 @@ void Gpu::gp0(u32 word) {
         }
     }
     cmd.push_back(word);
+    if (!cmdPrecise.empty() || pendingPrecise) {
+        // keep the precise positions lined up with the words
+        cmdPrecise.resize(cmd.size(), {kNan, kNan});
+        if (pendingPrecise) cmdPrecise.back() = {pendingX, pendingY};
+    }
+    pendingPrecise = false;
     if (!polyline && static_cast<int>(cmd.size()) >= cmdNeed) execute();
+}
+
+void Gpu::gp0Precise(u32 word, float x, float y) {
+    pendingPrecise = true;
+    pendingX = x;
+    pendingY = y;
+    gp0(word);
+    pendingPrecise = false;
 }
 
 void Gpu::execute() {
@@ -944,7 +1021,7 @@ void Gpu::execute() {
                 for (int y = 0; y < h; ++y)
                     for (int x = 0; x < w; ++x) {
                         vram[static_cast<size_t>((y0 + y) & 511) * 1024 + ((x0 + x) & 1023)] = c;
-                        if (!videoState.empty()) videoState[static_cast<size_t>((y0 + y) & 511) * 1024 + ((x0 + x) & 1023)] = 0;
+                        if (!videoState.empty() && !ghost) videoState[static_cast<size_t>((y0 + y) & 511) * 1024 + ((x0 + x) & 1023)] = 0;
                         if (scale > 1 && inFrameBuffer((x0 + x) & 1023, (y0 + y) & 511)) fillHi((x0 + x) & 1023, (y0 + y) & 511, c);
                     }
                 break;
@@ -959,11 +1036,19 @@ void Gpu::execute() {
                 twOffX = (cmd[0] >> 10) & 31;
                 twOffY = (cmd[0] >> 15) & 31;
                 break;
-            case 0xE3: areaX1 = cmd[0] & 1023; areaY1 = (cmd[0] >> 10) & 511; break;
+            case 0xE3:
+                areaX1 = cmd[0] & 1023;
+                areaY1 = (cmd[0] >> 10) & 511;
+                if (recordPasses && (passes.empty() || passes.back().x1 != areaX1 || passes.back().y1 != areaY1)) startPass();
+                break;
             case 0xE4:
                 areaX2 = cmd[0] & 1023;
                 areaY2 = (cmd[0] >> 10) & 511;
                 growFrameBuffer(areaX1, areaY1, areaX2, areaY2);
+                if (recordPasses && !passes.empty() && !passes.back().snapped) {
+                    passes.back().x2 = areaX2;
+                    passes.back().y2 = areaY2;
+                }
                 break;
             case 0xE5: offX = sext11(cmd[0]); offY = sext11(cmd[0] >> 11); break;
             case 0xE6: setMask = (cmd[0] & 1) ? 0x8000 : 0; checkMask = cmd[0] & 2; break;
@@ -971,6 +1056,7 @@ void Gpu::execute() {
         }
     }
     cmd.clear();
+    cmdPrecise.clear();
     polyline = false;
 }
 
@@ -991,6 +1077,7 @@ void Gpu::gp1(u32 word) {
     switch ((word >> 24) & 0x3F) {
         case 0x00:
             cmd.clear();
+            cmdPrecise.clear();
             loading = storing = false;
             displayEnabled = false;
             dispX = dispY = 0;
@@ -1006,7 +1093,7 @@ void Gpu::gp1(u32 word) {
             setMask = 0;
             checkMask = false;
             break;
-        case 0x01: cmd.clear(); loading = false; break;
+        case 0x01: cmd.clear(); cmdPrecise.clear(); loading = false; break;
         case 0x03: displayEnabled = !(word & 1); break;
         case 0x04: dmaDirection = word & 3; break;
         case 0x05: dispX = word & 1023; dispY = (word >> 10) & 511; trackDisplay(); break;

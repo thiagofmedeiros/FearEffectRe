@@ -123,9 +123,9 @@ def simple(ins: Insn) -> str:
     if o == "swr":
         return f"swr(c, {a}, {rt});"
     if o == "lwc2":
-        return f"gteMtc2(c, {ins.rt}, rd32(c, {a}));"
+        return f"gteLwc2(c, {a}, {ins.rt});"
     if o == "swc2":
-        return f"wr32(c, {a}, gteMfc2(c, {ins.rt}));"
+        return f"gteSwc2(c, {a}, {ins.rt});"
     if o == "mfc0":
         return _set(ins.rt, f"mfc0(c, {ins.rd})")
     if o == "mtc0":

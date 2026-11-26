@@ -3,7 +3,10 @@
 // hardware in edge rules and dithering.
 #pragma once
 
+#include <array>
+#include <deque>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 #include "psx/Machine.h"
@@ -34,6 +37,48 @@ struct Gpu {
     bool frame(const u16*& pixels, int& stride, int& x, int& y, int& width, int& height) const;
 
     void gp0(u32 word);
+    // A vertex word whose precise screen position (before rounding) is known:
+    // the high-resolution copy places the vertex there.
+    void gp0Precise(u32 word, float x, float y);
+    u64 preciseVertices = 0, vertices = 0;
+    // Set by the machine every frame: the precise positions of this frame and
+    // the last are reused for vertices drawn at the same whole-pixel point.
+    u32 frameTag = 0;
+
+    // ---- 60 fps: in-between frames ----------------------------------------
+    // The game draws a new picture every second display frame. With
+    // `recordPasses` on, each picture it draws (a "pass": everything drawn
+    // while the drawing area is one buffer) is kept: the buffer as it was
+    // just before the first 3D polygon (background and 2D are already in it),
+    // then every command after that, with the vertices' precise positions.
+    // renderBetween(), called on a second Gpu, draws the newest finished
+    // picture again with each 3D polygon moved part of the way back towards
+    // the same polygon in the picture before: the frame in between.
+    struct Regs {
+        u32 texpage;
+        int tpx, tpy, blend, depth, clutX, clutY;
+        int twMaskX, twMaskY, twOffX, twOffY;
+        int areaX1, areaY1, areaX2, areaY2, offX, offY;
+        u16 setMask;
+        bool checkMask;
+    };
+    struct Pass {
+        int x1 = 0, y1 = 0, x2 = -1, y2 = -1;  // drawing area, native pixels
+        bool snapped = false, done = false;
+        std::vector<u16> pixels;                // high-resolution drawing area at the snapshot
+        Regs regs{};
+        std::vector<u32> words;                 // commands from the snapshot on
+        std::vector<std::array<float, 2>> precise;  // per word: precise position, or NaN
+    };
+    bool recordPasses = false;
+    std::deque<Pass> passes;  // the last few, oldest first
+    // On the second Gpu: draws the frame `t` (0..1) of the way from the
+    // picture before the one `source` shows to the one it shows. False when
+    // there is nothing to draw it from or the two pictures do not belong
+    // together (a cut: too few polygons match); `matched` is the share of
+    // 3D polygons that matched, in percent.
+    bool renderBetween(Gpu& source, float t, int& matched);
+    bool ghost = false;  // this Gpu draws in-between frames: high resolution only, no movie tracking  // polygon vertices drawn, and how many at a precise position
     void gp1(u32 word);
     u32 read();
     u32 status(const Machine& m) const;
@@ -54,8 +99,14 @@ private:
         int x, y;
         int r, g, b;
         int u, v;
+        int hx = kNoPrecise, hy = 0;  // position in the high-resolution copy, when known precisely
     };
+    static constexpr int kNoPrecise = -0x40000000;
     int commandLength(u32 word) const;
+    Regs saveRegs() const;
+    void loadRegs(const Regs& r);
+    void recordWord(u32 word, float x, float y);
+    void startPass();
     void execute();
     void polygon();
     void line();
@@ -99,6 +150,16 @@ private:
     void setTexpage(u32 bits);
 
     std::vector<u32> cmd;
+    // per word of `cmd`: its precise position (x, y), NaN when there is none
+    std::vector<std::array<float, 2>> cmdPrecise;
+    struct CachedVertex {
+        int x, y;
+        u32 frame;
+    };
+    std::unordered_map<u32, CachedVertex> preciseCache;  // native (x, y) -> high-resolution position
+    bool pendingPrecise = false;  // the word being added comes with a precise position
+    float pendingX = 0, pendingY = 0;
+    static constexpr float kNan = __builtin_nanf("");
     int cmdNeed = 0;
     bool polyline = false;
     // CPU<->VRAM transfers

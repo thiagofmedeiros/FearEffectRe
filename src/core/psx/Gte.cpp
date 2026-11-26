@@ -1,6 +1,7 @@
 // Geometry transformation engine (COP2): register access rules and all
 // commands, including the flag register and the hardware division.
 #include <algorithm>
+#include <cmath>
 
 #include "Machine.h"
 
@@ -94,6 +95,14 @@ struct Gte {
         d[12] = d[13];
         d[13] = d[14];
         d[14] = (static_cast<u32>(x) & 0xFFFF) | (static_cast<u32>(y) << 16);
+        if (Machine* m = c.m; m && m->pgxp) {
+            for (int i = 0; i < 2; ++i) {
+                m->pgxpSxy[i][0] = m->pgxpSxy[i + 1][0];
+                m->pgxpSxy[i][1] = m->pgxpSxy[i + 1][1];
+                m->pgxpSxyValid[i] = m->pgxpSxyValid[i + 1];
+            }
+            m->pgxpSxyValid[2] = false;
+        }
     }
 
     // row i of (T<<12) + M * vec, with the overflow check after every addition
@@ -144,10 +153,32 @@ struct Gte {
         d[17] = d[18];
         d[18] = d[19];
         d[19] = limD(zs);
+        const u32 flagBefore = flag;
         s64 n = divide(k[26] & 0xFFFF, d[19]);
         s32 sx = limG(1, F(n * static_cast<s16>(d[9]) + K(24)) >> 16);
         s32 sy = limG(2, F(n * static_cast<s16>(d[10]) + K(25)) >> 16);
         pushSxy(sx, sy);
+        if (Machine* m = c.m; m && m->pgxp) {
+            // The same projection without rounding: the transformed point
+            // before it is cut to whole units, divided exactly. Used only where
+            // the hardware's result is not clipped or saturated and the two
+            // agree to the pixel, so the picture never moves by more than
+            // what was rounded away.
+            const double z = static_cast<double>(m3) / 4096.0;
+            const bool clipped = (flag & ~flagBefore & ((1u << 17) | (1u << 14) | (1u << 13))) != 0;
+            const s32 ir1 = static_cast<s16>(d[9]), ir2 = static_cast<s16>(d[10]);
+            const bool saturated = ir1 == 0x7FFF || ir1 == -0x8000 || ir2 == 0x7FFF || ir2 == -0x8000;
+            if (z >= 1.0 && !clipped && !saturated) {
+                const double h = static_cast<double>(k[26] & 0xFFFF);
+                const double fx = K(24) / 65536.0 + (static_cast<double>(m1) / 4096.0) * h / z;
+                const double fy = K(25) / 65536.0 + (static_cast<double>(m2) / 4096.0) * h / z;
+                if (std::abs(fx - (sx + 0.5)) < 1.0 && std::abs(fy - (sy + 0.5)) < 1.0) {
+                    m->pgxpSxy[2][0] = static_cast<float>(fx);
+                    m->pgxpSxy[2][1] = static_cast<float>(fy);
+                    m->pgxpSxyValid[2] = true;
+                }
+            }
+        }
         if (last) {
             s64 mac0 = F(n * static_cast<s16>(k[27]) + K(28));
             d[24] = static_cast<u32>(mac0);
@@ -332,6 +363,19 @@ u32 gteMfc2(Cpu& c, u32 reg) {
 
 void gteMtc2(Cpu& c, u32 reg, u32 value) {
     u32* d = c.gteData;
+    if (reg >= 12 && reg <= 15 && c.m && c.m->pgxp) {
+        // screen positions written by the game: no precise value for them
+        if (reg == 15) {
+            for (int i = 0; i < 2; ++i) {
+                c.m->pgxpSxy[i][0] = c.m->pgxpSxy[i + 1][0];
+                c.m->pgxpSxy[i][1] = c.m->pgxpSxy[i + 1][1];
+                c.m->pgxpSxyValid[i] = c.m->pgxpSxyValid[i + 1];
+            }
+            c.m->pgxpSxyValid[2] = false;
+        } else {
+            c.m->pgxpSxyValid[reg - 12] = false;
+        }
+    }
     switch (reg) {
         case 15:  // SXYP: push
             d[12] = d[13];
@@ -382,5 +426,37 @@ void gteCtc2(Cpu& c, u32 reg, u32 value) {
 }
 
 void gteCommand(Cpu& c, u32 word) { Gte(c).run(word); }
+
+void gteLwc2(Cpu& c, u32 addr, u32 reg) {
+    const u32 value = rd32(c, addr);
+    gteMtc2(c, reg, value);  // marks the position as not precise
+    Machine* m = c.m;
+    if (!m || !m->pgxp || reg < 12 || reg > 15) return;
+    if (const Machine::PreciseWord* e = m->preciseAt(addr, value)) {
+        const int i = reg == 15 ? 2 : static_cast<int>(reg) - 12;
+        m->pgxpSxy[i][0] = e->x;
+        m->pgxpSxy[i][1] = e->y;
+        m->pgxpSxyValid[i] = true;
+    }
+}
+
+void gteSwc2(Cpu& c, u32 addr, u32 reg) {
+    const u32 value = gteMfc2(c, reg);
+    wr32(c, addr, value);
+    Machine* m = c.m;
+    if (!m || !m->pgxp || m->pgxpMem.empty()) return;
+    const long at = Machine::pgxpIndex(addr);
+    if (at < 0) return;
+    Machine::PreciseWord& e = m->pgxpMem[static_cast<size_t>(at)];
+    const int i = reg == 15 ? 2 : static_cast<int>(reg) - 12;
+    if (i >= 0 && i <= 2 && m->pgxpSxyValid[i]) {
+        e.word = value;
+        e.frame = static_cast<u32>(m->frame);
+        e.x = m->pgxpSxy[i][0];
+        e.y = m->pgxpSxy[i][1];
+    } else {
+        e = Machine::PreciseWord{};
+    }
+}
 
 }  // namespace fe

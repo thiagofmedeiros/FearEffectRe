@@ -132,6 +132,22 @@ struct Machine {
     // Runs the recompiled function containing `addr` in the interpreter from
     // now on. Returns its entry address, or 0 if `addr` is in no recompiled code.
     u32 interpretFunctionAt(u32 addr);
+    // Wrapped functions: a call to `entry` runs the wrapper instead, which
+    // can call callOriginal() and look at or change the result (fixes for
+    // the game's own bugs). Like a function, it leaves c.pc where the caller
+    // continues.
+    struct Wrap {
+        u32 entry;
+        std::function<void(Cpu&)> wrapper;
+    };
+    std::vector<Wrap> wraps;
+    void wrap(u32 entry, std::function<void(Cpu&)> wrapper);
+    void callOriginal(Cpu& c, u32 entry);
+    const Wrap* findWrap(u32 pc) const {
+        for (const Wrap& w : wraps)
+            if (w.entry == pc) return &w;
+        return nullptr;
+    }
 
     GuestFn lookup(u32 pc) const;
     const JumpMeta* findJumpMeta(u32 pc) const;
@@ -140,9 +156,43 @@ struct Machine {
     void call(Cpu& c, u32 target);                // guest call, returns when callee returns
     void jump(Cpu& c, u32 target);                // unresolved jr: BIOS vector or tail call
     void resume(Cpu& c, u32 untilPc);             // callee came back at c.pc instead of untilPc
-    void interpret(Cpu& c, u32 untilPc, u32 untilSp, bool honourMeta = false);
+    // `original`: c.pc is the entry of a wrapped function being called by its wrapper
+    void interpret(Cpu& c, u32 untilPc, u32 untilSp, bool honourMeta = false, bool original = false);
     void onSlice(Cpu& c);                         // time slice used up
     void requestSlice(Cpu& c);                    // re-evaluate interrupts soon
+
+    // ---- precise vertices (PGXP) ------------------------------------------
+    // The GTE rounds projected screen positions to whole pixels, which makes
+    // 3D models wobble. With `pgxp` on, it also keeps the unrounded position;
+    // when the game stores one to RAM (swc2), it is remembered for that word,
+    // and when the GPU's display list hands that same word to the GPU, the
+    // high-resolution renderer places the vertex at the precise position.
+    // What the game sees (video memory, registers) does not change.
+    struct PreciseWord {
+        u32 word = 0;      // the value stored: the entry is used only while RAM still holds it
+        u32 frame = 0;     // when (entries older than two frames are stale)
+        float x = 0, y = 0;
+    };
+    bool pgxp = false;
+    float pgxpSxy[3][2]{};     // precise SXY0..2, next to the GTE's FIFO
+    bool pgxpSxyValid[3]{};
+    std::vector<PreciseWord> pgxpMem;  // per RAM word, then per scratchpad word; allocated when pgxp is turned on
+    static constexpr size_t kPgxpWords = kRamSize / 4 + 0x400 / 4;
+    // Index into pgxpMem of a physical address in RAM or the scratchpad, or -1.
+    static long pgxpIndex(u32 addr) {
+        const u32 p = addr & 0x1FFFFFFF;
+        if (p & 3) return -1;
+        if (p < 0x800000) return static_cast<long>((p & (kRamSize - 1)) >> 2);
+        if (p >= 0x1F800000 && p < 0x1F800400) return static_cast<long>(kRamSize / 4 + ((p - 0x1F800000) >> 2));
+        return -1;
+    }
+    u64 pgxpUsed = 0;          // vertices drawn at a precise position (for the report)
+    const PreciseWord* preciseAt(u32 addr, u32 word) const {
+        const long i = pgxpMem.empty() ? -1 : pgxpIndex(addr);
+        if (i < 0) return nullptr;
+        const PreciseWord& p = pgxpMem[static_cast<size_t>(i)];
+        return p.word == word && p.frame + 2 >= static_cast<u32>(frame) && (p.x != 0 || p.y != 0) ? &p : nullptr;
+    }
 
     // ---- time and interrupts --------------------------------------------
     u64 clock = 0;           // cycles since power on
@@ -382,5 +432,10 @@ u32 gteCfc2(Cpu& c, u32 reg);
 void gteMtc2(Cpu& c, u32 reg, u32 value);
 void gteCtc2(Cpu& c, u32 reg, u32 value);
 void gteCommand(Cpu& c, u32 word);
+// swc2: stores a GTE register to memory (and its precise screen position, see pgxp)
+void gteSwc2(Cpu& c, u32 addr, u32 reg);
+// lwc2: loads a GTE register from memory (a screen position stored with swc2
+// keeps its precise value)
+void gteLwc2(Cpu& c, u32 addr, u32 reg);
 
 }  // namespace fe

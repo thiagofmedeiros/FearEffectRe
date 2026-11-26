@@ -33,7 +33,9 @@ struct LaunchSettings {
     int display = 0;     // index into listDisplays()
     int video = 1;       // movies and backgrounds: 0 original, 1 AI fast, 2 AI best (cached), 3 SeedVR2 (cached)
     bool modern = false; // screen-relative movement instead of tank controls
-    bool widescreen = false;  // gameplay and movies without the black bands, filling the width
+    bool widescreen = false;
+    bool precise = false;   // 3D vertices at their exact position in the high-resolution picture
+    bool smooth = false;    // 60 fps: frames drawn in between the game's  // gameplay and movies without the black bands, filling the width
     bool infiniteHealth = false, infiniteAmmo = false;  // the game's own cheats
     std::string cheatFile;              // DuckStation cheat file, and the cheats of it to use
     std::vector<std::string> cheats;

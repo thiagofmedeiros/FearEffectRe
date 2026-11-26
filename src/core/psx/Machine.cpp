@@ -114,6 +114,22 @@ GuestFn Machine::lookup(u32 pc) const {
     return nullptr;
 }
 
+void Machine::wrap(u32 entry, std::function<void(Cpu&)> wrapper) {
+    wraps.push_back({entry, std::move(wrapper)});
+    slowCalls = true;  // recompiled callers go through call(), which finds the wrapper
+}
+
+void Machine::callOriginal(Cpu& c, u32 entry) {
+    if (nativeEnabled)
+        if (GuestFn fn = lookup(entry)) {
+            fn(c);
+            return;
+        }
+    u32 ra = c.r[31], sp = c.r[29];
+    c.pc = entry;
+    interpret(c, ra, sp, false, true);
+}
+
 u32 Machine::interpretFunctionAt(u32 addr) {
     addr &= ~3u;
     for (const auto& mod : modules) {
@@ -162,6 +178,11 @@ void Machine::call(Cpu& c, u32 target) {
         hooks.call(c, target);
         return;
     }
+    if (!wraps.empty())
+        if (const Wrap* w = findWrap(target)) {
+            w->wrapper(c);
+            return;
+        }
     if (nativeEnabled) {
         if (GuestFn fn = lookup(target)) {
             fn(c);
@@ -200,6 +221,7 @@ void Machine::onSlice(Cpu& c) {
     while (clock >= nextVblank) {
         nextVblank += kCyclesPerFrame;
         ++frame;
+        if (pgxp) gpu->frameTag = static_cast<u32>(frame);
         raise(kIrqVblank);
         if (onVblank) onVblank();
         if (!cardPending.empty()) {
@@ -395,8 +417,8 @@ inline Step execute(Cpu& c, u32 pc, u32 w) {
         case 0x2A: swl(c, R[rs] + simm, R[rt]); break;
         case 0x2B: wr32(c, R[rs] + simm, R[rt]); break;
         case 0x2E: swr(c, R[rs] + simm, R[rt]); break;
-        case 0x32: gteMtc2(c, rt, rd32(c, R[rs] + simm)); break;
-        case 0x3A: wr32(c, R[rs] + simm, gteMfc2(c, rt)); break;
+        case 0x32: gteLwc2(c, R[rs] + simm, rt); break;
+        case 0x3A: gteSwc2(c, R[rs] + simm, rt); break;
         default: throw Stop{"invalid instruction"};
     }
     return st;
@@ -404,11 +426,17 @@ inline Step execute(Cpu& c, u32 pc, u32 w) {
 
 }  // namespace
 
-void Machine::interpret(Cpu& c, u32 untilPc, u32 untilSp, bool honourMeta) {
+void Machine::interpret(Cpu& c, u32 untilPc, u32 untilSp, bool honourMeta, bool original) {
     const bool hooked = static_cast<bool>(hooks.call);
     for (;;) {
         u32 pc = c.pc;
         if (pc == untilPc && (untilSp == 0 || c.r[29] == untilSp)) return;
+        if (!hooked && !wraps.empty() && !original)
+            if (const Wrap* w = findWrap(pc)) {
+                w->wrapper(c);  // leaves c.pc where the guest continues
+                continue;
+            }
+        original = false;  // only the entry of the wrapped function itself runs unwrapped
         if (!hooked) {
             if (nativeEnabled) {
                 if (GuestFn fn = lookup(pc)) {

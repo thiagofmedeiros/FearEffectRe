@@ -18,6 +18,7 @@
 #include "psx/Spu.h"
 #include "psx/Machine.h"
 #include "Cheats.h"
+#include "GameFixes.h"
 #include "InputLog.h"
 #include "ModernControls.h"
 #if FE_HAVE_WINDOW
@@ -257,6 +258,9 @@ int usage() {
                  "--video original|fast|best|seedvr2: AI upscaling of movies and backgrounds (best keeps an HD cache),\n"
                  "--widescreen: gameplay and movies (a letterboxed 2:1 picture) fill the width, without black bands,\n"
                  "--infinite-health and --infinite-ammo turn on the game's own cheats,\n"
+                 "--no-game-fixes: leave the game's own bugs as they are (see README),\n"
+                 "--smooth: 60 fps, a frame drawn in between each two of the game's (shows the picture 1/60 s later),\n"
+                 "--precise: 3D models drawn at their exact position in the high-resolution picture (no wobble),\n"
                  "--analog: a DualShock in analog mode (the game reads the left stick; also in FearEffectRe.ini),\n"
                  "--modern: the stick or D-pad moves the character in that direction on screen (no tank controls),\n"
                  "--build-hd-cache enlarges every movie and background frame of all discs into the HD cache (hours),\n"
@@ -290,6 +294,7 @@ int main(int argc, char** argv) {
     std::string discPath;
     std::string launchCheatFile;  // the cheat list's file and the cheats chosen in the launcher
     std::vector<std::string> launchCheats;
+    bool launchPrecise = false, launchSmooth = false;
 #if FE_HAVE_WINDOW
     SetProcessDPIAware();  // window sizes are real pixels
     if (argc < 2) {
@@ -302,6 +307,8 @@ int main(int argc, char** argv) {
         videoMode = static_cast<app::VideoMode>(launch.video);
         modern = launch.modern;
         widescreen = launch.widescreen;
+        launchPrecise = launch.precise;
+        launchSmooth = launch.smooth;
         infiniteHealth = launch.infiniteHealth;
         infiniteAmmo = launch.infiniteAmmo;
         launchCheatFile = launch.cheatFile;
@@ -337,6 +344,11 @@ int main(int argc, char** argv) {
     bool mute = false;
     bool verifyOnly = false;
     bool analogPad = false;  // DualShock in analog mode instead of a digital pad
+    bool precise = false;    // PGXP: 3D vertices at their precise position in the high-resolution picture
+    bool gameFixes = true;   // fixes for the game's own bugs (--no-game-fixes: only count them)
+    bool smooth = false;     // 60 fps: a frame drawn in between each two of the game's (implies precise vertices)
+    precise = launchPrecise;
+    smooth = launchSmooth;
     fe::u64 ramFrom = 0;  // first frame --ram writes
     bool hdShots = false;  // --shots at the internal resolution instead of the console's
     for (int i = 2; i < argc; ++i) {
@@ -392,6 +404,9 @@ int main(int argc, char** argv) {
         else if (a == "--audio-latency" && i + 1 < argc) audioLatency = std::clamp(std::atoi(argv[++i]), 40, 340);
         else if (a == "--modern") modern = true;
         else if (a == "--analog") analogPad = true;
+        else if (a == "--precise") precise = true;
+        else if (a == "--no-game-fixes") gameFixes = false;
+        else if (a == "--smooth") smooth = true;
         else if (a == "--widescreen") widescreen = true;
         else if (a == "--infinite-health") infiniteHealth = true;
         else if (a == "--infinite-ammo") infiniteAmmo = true;
@@ -505,6 +520,15 @@ int main(int argc, char** argv) {
 #endif
         if (scale < 1) scale = 1;
         m.gpu->setScale(scale);
+        std::unique_ptr<fe::Gpu> between;  // draws the in-between frames
+        if (smooth && scale > 1) {
+            m.gpu->recordPasses = true;
+            between = std::make_unique<fe::Gpu>();
+            between->ghost = true;
+            between->setScale(scale);
+        }
+        int lastDispX = -1, lastDispY = -1;
+        fe::u64 lastFlip = 0, betweenFrames = 0, betweenCuts = 0;
 #if FE_HAVE_WINDOW
         if (videoMode != app::VideoMode::Original && scale > 1) {
             wchar_t exePath[MAX_PATH];
@@ -532,6 +556,11 @@ int main(int argc, char** argv) {
         }
         m.sioTrace = logSio;
         m.padAnalog = analogPad;
+        if (smooth) precise = true;  // in-between frames are drawn from the precise positions
+        if (precise) {
+            m.pgxp = true;
+            m.pgxpMem.assign(fe::Machine::kPgxpWords, fe::Machine::PreciseWord{});
+        }
         const char* mode = "interpreter";
 #if FE_HAVE_RECOMP
         if (!interpreterOnly) {
@@ -747,6 +776,26 @@ int main(int argc, char** argv) {
             }
             audioSamples += m.audio.size();
             if (!wavPath.empty()) wav.insert(wav.end(), m.audio.begin(), m.audio.end());
+            // ---- 60 fps: the game flipped to a new picture two frames after the last ----
+            bool showBetween = false;
+            if (between && m.gpu->displayEnabled) {
+                const bool flipped = m.gpu->dispX != lastDispX || m.gpu->dispY != lastDispY;
+                if (flipped) {
+                    const fe::u64 since = m.frame - lastFlip;
+                    lastFlip = m.frame;
+                    lastDispX = m.gpu->dispX;
+                    lastDispY = m.gpu->dispY;
+                    int matched = 0;
+                    if (since == 2) {
+                        if (between->renderBetween(*m.gpu, 0.5f, matched)) {
+                            showBetween = true;
+                            ++betweenFrames;
+                        } else {
+                            ++betweenCuts;
+                        }
+                    }
+                }
+            }
 #if FE_HAVE_WINDOW
             if (window) {
                 const fe::u16* pixels;
@@ -756,7 +805,11 @@ int main(int argc, char** argv) {
                 fe::u64 activity = m.gp0Words + m.gp1Words;
                 bool changed = activity != lastActivity || (m.frame & 63) == 0;
                 lastActivity = activity;
-                if (!changed) {
+                if (showBetween && between->frame(pixels, stride, fx, fy, w, h)) {
+                    // 60 fps: the frame in between; the game's own picture follows next time
+                    open = window->present(pixels, stride, fx, fy, w, h);
+                    lastActivity = ~0ull;
+                } else if (!changed) {
                     open = window->idle();
                 } else if (m.gpu->displayEnabled && m.gpu->frame(pixels, stride, fx, fy, w, h)) {
                     open = window->present(pixels, stride, fx, fy, w, h);
@@ -867,6 +920,41 @@ int main(int argc, char** argv) {
                     std::fclose(f);
                 }
             }
+            auto hdPicture = [&](fe::Gpu& g, std::vector<fe::u8>& rgb, int& w, int& h) {
+                const fe::u16* hp;
+                int hs, hx, hy;
+                if (!g.frame(hp, hs, hx, hy, w, h)) return false;
+                rgb.resize(static_cast<size_t>(w) * h * 3);
+                for (int yy = 0; yy < h; ++yy)
+                    for (int xx = 0; xx < w; ++xx) {
+                        const fe::u16 px = hp[static_cast<size_t>(hy + yy) * hs + hx + xx];
+                        fe::u8* o = &rgb[(static_cast<size_t>(yy) * w + xx) * 3];
+                        o[0] = static_cast<fe::u8>((px & 31) << 3);
+                        o[1] = static_cast<fe::u8>(((px >> 5) & 31) << 3);
+                        o[2] = static_cast<fe::u8>(((px >> 10) & 31) << 3);
+                    }
+                return true;
+            };
+            // --shots with --smooth: the in-between frames too, as fNNNNNN_mid.png
+            if (showBetween && !shotDir.empty() && shotEvery && m.frame % shotEvery < 8) {
+                std::vector<fe::u8> rgb;
+                int w = 0, h = 0;
+                if (hdPicture(*between, rgb, w, h)) {
+                    char name[40];
+                    std::snprintf(name, sizeof name, "/f%06llu_mid.png", static_cast<unsigned long long>(m.frame));
+                    writePng(shotDir + name, rgb, w, h);
+                }
+            }
+            if (!shotDir.empty() && shotEvery && between && m.frame % shotEvery < 8) {
+                // and the game's own frames around them
+                std::vector<fe::u8> rgb;
+                int w = 0, h = 0;
+                if (hdPicture(*m.gpu, rgb, w, h)) {
+                    char name[40];
+                    std::snprintf(name, sizeof name, "/f%06llu_own.png", static_cast<unsigned long long>(m.frame));
+                    writePng(shotDir + name, rgb, w, h);
+                }
+            }
             if (!shotDir.empty() && shotEvery && m.frame % shotEvery == 0) {
                 std::vector<fe::u8> rgb;
                 int w = 0, h = 0;
@@ -891,9 +979,11 @@ int main(int argc, char** argv) {
             }
         };
         m.nativeEnabled = !interpreterOnly;
+        app::GameFixStats fixStats;
+        for (const auto& line : app::installGameFixes(m, gameFixes, fixStats)) std::printf("fix     %s\n", line.c_str());
         m.cycleLimit = frames ? static_cast<fe::u64>(frames) * fe::kCyclesPerFrame : ~0ull;
         std::printf("cpu     %s, entry %08x, sp %08x\n", mode, m.cpu.pc, m.cpu.r[29]);
-        std::printf("render  %dx internal resolution\n", m.gpu->scale);
+        std::printf("render  %dx internal resolution%s\n", m.gpu->scale, precise ? ", precise vertices" : "");
 
         auto wallStart = std::chrono::steady_clock::now();
         std::string reason = "returned";
@@ -928,6 +1018,12 @@ int main(int argc, char** argv) {
             }
         }
         std::printf("mdec    %llu macroblocks decoded\n", static_cast<unsigned long long>(m.mdec->macroblocks));
+        if (between)
+            std::printf("smooth  %llu frames drawn in between, %llu flips shown as they were (cuts)\n",
+                        static_cast<unsigned long long>(betweenFrames), static_cast<unsigned long long>(betweenCuts));
+        std::printf("fixes   movie decoder: %llu calls, %llu resumes of a finished picture%s\n",
+                    static_cast<unsigned long long>(fixStats.vlcCalls), static_cast<unsigned long long>(fixStats.vlcStaleResumes),
+                    gameFixes ? " (made harmless)" : " (not fixed)");
         for (const auto& t : m.mdec->trace) std::printf("  %s\n", t.c_str());
         {
             std::vector<fe::u8> rgb;
@@ -947,8 +1043,9 @@ int main(int argc, char** argv) {
                 writePng(vramPath, all, 1024, 512);
             }
         }
-        std::printf("gpu     %llu GP0 words, %llu GP1 words\n", static_cast<unsigned long long>(m.gp0Words),
-                    static_cast<unsigned long long>(m.gp1Words));
+        std::printf("gpu     %llu GP0 words, %llu GP1 words, %llu vertices at a precise position\n",
+                    static_cast<unsigned long long>(m.gp0Words), static_cast<unsigned long long>(m.gp1Words),
+                    static_cast<unsigned long long>(m.gpu->preciseVertices));
 
         std::map<std::string, size_t> counts;
         std::vector<std::string> order;

@@ -179,6 +179,8 @@ void Gpu::state(StateIO& io) {
     std::fill(videoState.begin(), videoState.end(), u8{0});
     videoDirty.clear();
     videoBreak = true;
+    passes.clear();        // pictures recorded before the load (60 fps) do not lead to this one
+    preciseCache.clear();
 }
 
 void Mdec::state(StateIO& io, Machine& m) {

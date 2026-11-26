@@ -23,6 +23,7 @@ add_library(fe_core STATIC
     src/core/psx/Spu.cpp
     src/core/psx/Hardware.cpp
     src/core/psx/State.cpp
+    src/core/psx/GpuSmooth.cpp
 )
 target_include_directories(fe_core PUBLIC src/core)
 if(MSVC)
@@ -71,7 +72,7 @@ else()
     set(FE_HAVE_RECOMP 0)
 endif()
 
-add_executable(FearEffectRe src/app/main.cpp src/app/ModernControls.cpp)
+add_executable(FearEffectRe src/app/main.cpp src/app/ModernControls.cpp src/app/GameFixes.cpp)
 if(WIN32)
     enable_language(RC)
     target_sources(FearEffectRe PRIVATE src/app/FearEffectRe.rc src/app/CheatList.cpp src/app/Controls.cpp src/app/Window.cpp src/app/Launcher.cpp src/app/VideoAI.cpp src/app/StrVideo.cpp)
