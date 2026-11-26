@@ -262,6 +262,24 @@ int main(int argc, char** argv) {
     try {
         auto discPtr = std::make_shared<fe::DiscImage>(discPath);
         fe::DiscImage& disc = *discPtr;
+#if FE_HAVE_WINDOW
+        // SeedVR2 shows only pictures from its own cache, built disc by disc:
+        // say so when the disc being played has not been built
+        auto seedvr2Check = [&](fe::DiscImage& d) {
+            wchar_t exePath[MAX_PATH];
+            GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+            const auto cache = std::filesystem::path(exePath).parent_path() / "hdcache";
+            if (app::seedvr2DiscReady(cache, d.volumeId())) return;
+            const std::string& v = d.volumeId();
+            const int number = v == "SLUS-01056" ? 2 : v == "SLUS-01057" ? 3 : v == "SLUS-01058" ? 4 : 1;
+            std::string text = "The SeedVR2 HD cache has not been built for disc " + std::to_string(number) + " (" + v +
+                               ").\n\nOn this disc, movies and backgrounds without a SeedVR2 picture are shown as on "
+                               "the console, not upscaled. To build it, choose \"AI upscale, SeedVR2\" in the launcher "
+                               "and press \"Build HD cache...\" (it builds every disc found next to disc 1).";
+            std::printf("video   SeedVR2 cache not built for disc %d (%s)\n", number, v.c_str());
+            if (viaLauncher) MessageBoxA(nullptr, text.c_str(), "FearEffectRe - SeedVR2", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+        };
+#endif
         auto boot = disc.bootExecutable();
         if (!boot) throw std::runtime_error("SYSTEM.CNF does not name a boot executable");
         auto exe = disc.readFile(*boot);
@@ -296,6 +314,7 @@ int main(int argc, char** argv) {
             auto up = app::createAiUpscaler(videoMode, exeDir / "ai", exeDir / "hdcache", error);
             if (up) {
                 m.gpu->setUpscaler(up);
+                if (videoMode == app::VideoMode::AiSeedVR2) seedvr2Check(disc);
                 std::printf("video   AI upscaling (%s)\n", app::videoModeId(videoMode));
             } else {
                 std::printf("video   AI upscaling is off: %s\n", error.c_str());
@@ -366,7 +385,11 @@ int main(int argc, char** argv) {
         auto insertDisc = [&](int number) {
             std::string path = discPathFor(discPath, number);
             try {
-                m.cd->insert(m, std::make_shared<fe::DiscImage>(path));
+                auto next = std::make_shared<fe::DiscImage>(path);
+                m.cd->insert(m, next);
+#if FE_HAVE_WINDOW
+                if (videoMode == app::VideoMode::AiSeedVR2) seedvr2Check(*next);
+#endif
                 m.note("disc " + std::to_string(number) + " inserted");
             } catch (const std::exception& e) {
                 m.note(std::string("cannot insert disc: ") + e.what());

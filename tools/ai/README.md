@@ -28,12 +28,20 @@ Then configure with `-DFE_AI_DIR=<ai folder>` so the build copies it next to the
 
 ## SeedVR2 (optional, for the SeedVR2 video mode)
 
+The launcher installs SeedVR2 the first time it is chosen (after asking): it runs
+`setup_seedvr2.ps1` (copied into `ai` by the build), which puts a portable Python 3.12,
+PyTorch for CUDA, the SeedVR2 code (a pinned commit) and the 3B model in `ai/seedvr2`,
+about 12 GB of downloads. Nothing is installed on the system. It can be run again to
+finish an interrupted installation:
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File ai\setup_seedvr2.ps1 -Dir ai\seedvr2
+
 The SeedVR2 cache builder runs `seedvr2_chunk.py` (copied into `ai` by the build) with
 the Python in `ai/seedvr2/venv`, on chunks of up to 300 frames. `ai/seedvr2` holds:
 
 | Folder | Contents |
 |---|---|
-| `venv` | Python 3.13 virtual environment with PyTorch for CUDA 12.6 (`pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126`) and the repo's `requirements.txt` |
+| `python` or `venv` | the portable Python from the installer, or a Python 3.13 virtual environment made by hand, with PyTorch for CUDA 12.6 (`pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126`) and the repo's `requirements.txt` |
 | `repo` | [ComfyUI-SeedVR2_VideoUpscaler](https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler) (its standalone `inference_cli.py`) |
 | `models/SEEDVR2` | `seedvr2_ema_3b_fp16.safetensors` and `ema_vae_fp16.safetensors` from [numz/SeedVR2_comfyUI](https://huggingface.co/numz/SeedVR2_comfyUI) |
 

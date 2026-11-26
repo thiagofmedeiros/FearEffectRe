@@ -86,7 +86,9 @@ if(WIN32)
     add_custom_command(TARGET FearEffectRe POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:FearEffectRe>/ai"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ai/seedvr2_chunk.py"
-                "$<TARGET_FILE_DIR:FearEffectRe>/ai/seedvr2_chunk.py")
+                "$<TARGET_FILE_DIR:FearEffectRe>/ai/seedvr2_chunk.py"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ai/setup_seedvr2.ps1"
+                "$<TARGET_FILE_DIR:FearEffectRe>/ai/setup_seedvr2.ps1")
     target_compile_definitions(FearEffectRe PRIVATE FE_HAVE_WINDOW=1)
 endif()
 target_link_libraries(FearEffectRe PRIVATE fe_core ${FE_RECOMP_LIB})

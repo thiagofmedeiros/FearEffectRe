@@ -437,18 +437,12 @@ class BestUpscaler : public fe::VideoUpscaler {
 public:
     Model model;
     Pack pack;
-    Pack seedvr;          // SeedVR2 pictures, looked up first when opened
-    bool useSeedvr = false;
-    unsigned hits = 0, misses = 0, seedvrHits = 0;
+    unsigned hits = 0, misses = 0;
 
     bool upscale(const fe::u8* rgb, int w, int h, std::vector<fe::u8>& out) override {
         const uint64_t hash = pictureHash(rgb, w, h);
         const size_t want = static_cast<size_t>(w) * K * h * K * 3;
         bool raw = false;
-        if (useSeedvr && seedvr.read(hash, out, raw) && raw && out.size() == want) {
-            ++seedvrHits;
-            return true;
-        }
         if (pack.read(hash, out, raw)) {
             if (raw && out.size() == want) {
                 ++hits;
@@ -472,10 +466,35 @@ public:
     }
     ~BestUpscaler() override {
         model.stats("best");
-        if (useSeedvr) std::printf("video   SeedVR2 cache: %u pictures found\n", seedvrHits);
         if (hits + misses) std::printf("video   HD cache: %u pictures found, %u enlarged and added\n", hits, misses);
     }
 };
+
+// SeedVR2 is far too slow to run while playing: only pictures from its own
+// cache are shown, never another model's. A picture missing from it (its disc
+// has not been built yet) is shown as on the console.
+class SeedVR2Upscaler : public fe::VideoUpscaler {
+public:
+    Pack pack;
+    unsigned hits = 0, misses = 0;
+    bool upscale(const fe::u8* rgb, int w, int h, std::vector<fe::u8>& out) override {
+        bool raw = false;
+        if (pack.read(pictureHash(rgb, w, h), out, raw) && raw && out.size() == static_cast<size_t>(w) * K * h * K * 3) {
+            ++hits;
+            return true;
+        }
+        ++misses;
+        return false;
+    }
+    ~SeedVR2Upscaler() override {
+        if (hits + misses) std::printf("video   SeedVR2 cache: %u pictures found, %u missing (shown as on the console)\n", hits, misses);
+    }
+};
+
+// A disc whose SeedVR2 cache is complete has a marker file named after its volume.
+fs::path seedvr2Marker(const fs::path& cacheDir, const std::string& volumeId) {
+    return cacheDir / ("seedvr2-" + volumeId + ".done");
+}
 
 std::shared_ptr<BestUpscaler> createBest(const fs::path& aiDir, const fs::path& cacheDir, std::string& error) {
     auto u = std::make_shared<BestUpscaler>();
@@ -495,14 +514,12 @@ std::shared_ptr<fe::VideoUpscaler> createAiUpscaler(VideoMode mode, const fs::pa
         if (!u->model.load(aiDir, aiDir / L"fast_x4.onnx", error)) return nullptr;
         return u;
     }
-    auto u = createBest(aiDir, cacheDir, error);
-    if (u && mode == VideoMode::AiSeedVR2) {
-        std::string e;
-        u->useSeedvr = u->seedvr.open(cacheDir, e, L"seedvr2.pack");
-        if (u->useSeedvr && u->seedvr.size() == 0)
-            std::printf("video   the SeedVR2 cache is empty: build it from the launcher (Build HD cache)\n");
+    if (mode == VideoMode::AiSeedVR2) {
+        auto u = std::make_shared<SeedVR2Upscaler>();
+        if (!u->pack.open(cacheDir, error, L"seedvr2.pack")) return nullptr;
+        return u;
     }
-    return u;
+    return createBest(aiDir, cacheDir, error);
 }
 
 namespace {
@@ -646,9 +663,18 @@ int buildHdCache(const std::vector<std::string>& discs, const fs::path& aiDir, c
     return 0;
 }
 
+bool seedvr2DiscReady(const fs::path& cacheDir, const std::string& volumeId) {
+    std::error_code ec;
+    return fs::exists(seedvr2Marker(cacheDir, volumeId), ec);
+}
+
 int buildSeedVR2Cache(const std::vector<std::string>& discs, const fs::path& aiDir, const fs::path& cacheDir) {
     const fs::path seedvr = aiDir / L"seedvr2";
-    const fs::path python = seedvr / L"venv" / L"Scripts" / L"python.exe";
+    // the portable Python from setup_seedvr2.ps1, or a virtual environment set up by hand
+    std::error_code pyec;
+    const fs::path python = fs::exists(seedvr / L"python" / L"python.exe", pyec)
+                                ? seedvr / L"python" / L"python.exe"
+                                : seedvr / L"venv" / L"Scripts" / L"python.exe";
     const fs::path script = aiDir / L"seedvr2_chunk.py";
     std::error_code ec;
     if (!fs::exists(python, ec) || !fs::exists(seedvr / L"repo" / L"inference_cli.py", ec) || !fs::exists(script, ec)) {
@@ -761,6 +787,10 @@ int buildSeedVR2Cache(const std::vector<std::string>& discs, const fs::path& aiD
                 },
                 file.path);
             flush();
+        }
+        if (!failed) {  // every movie and background of this disc is in the cache
+            std::ofstream(seedvr2Marker(cacheDir, disc->volumeId())) << path << "\n";
+            std::printf("seedvr2 disc %s is complete\n", disc->volumeId().c_str());
         }
     }
     std::printf("seedvr2 %s: %u pictures added in %u chunks, %zu in the SeedVR2 cache\n", failed ? "stopped" : "done", added,

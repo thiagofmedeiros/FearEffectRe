@@ -61,6 +61,57 @@ struct State {
     bool play = false, done = false;
 };
 
+std::filesystem::path exeDir() {
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    return std::filesystem::path(exe).parent_path();
+}
+
+// SeedVR2 is installed in ai/seedvr2 by ai/setup_seedvr2.ps1 (portable
+// Python, PyTorch, the SeedVR2 code and model), or by hand with a venv.
+bool seedvr2Installed() {
+    const std::filesystem::path dir = exeDir() / L"ai" / L"seedvr2";
+    std::error_code ec;
+    const bool python = std::filesystem::exists(dir / L"python" / L"python.exe", ec) ||
+                        std::filesystem::exists(dir / L"venv" / L"Scripts" / L"python.exe", ec);
+    return python && std::filesystem::exists(dir / L"repo" / L"inference_cli.py", ec) &&
+           std::filesystem::exists(dir / L"models" / L"SEEDVR2" / L"seedvr2_ema_3b_fp16.safetensors", ec);
+}
+
+// Asks, then runs the installer in its own window. True when it was started.
+bool offerSeedvr2Install(HWND hwnd) {
+    const std::filesystem::path script = exeDir() / L"ai" / L"setup_seedvr2.ps1";
+    std::error_code ec;
+    if (!std::filesystem::exists(script, ec)) {
+        MessageBoxW(hwnd, L"SeedVR2 is not installed, and its installer (ai\\setup_seedvr2.ps1) is missing.",
+                    L"SeedVR2", MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    if (MessageBoxW(hwnd,
+                    L"SeedVR2 is not installed yet. Installing it will:\n\n"
+                    L"- download about 12 GB: a portable Python 3.12, PyTorch for NVIDIA graphics cards (CUDA), "
+                    L"the SeedVR2 code from GitHub and the SeedVR2 3B model from Hugging Face;\n"
+                    L"- put everything in the ai\\seedvr2 folder next to the game (about 16 GB on disk). "
+                    L"Nothing is installed on the system; deleting that folder removes it.\n\n"
+                    L"SeedVR2 needs an NVIDIA graphics card, ideally with 24 GB of video memory. "
+                    L"The installation runs in a separate window and can take a while.\n\n"
+                    L"Install SeedVR2 now?",
+                    L"Install SeedVR2", MB_OKCANCEL | MB_ICONWARNING) != IDOK)
+        return false;
+    std::wstring cmd = L"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"" + script.wstring() + L"\" -Dir \"" +
+                       (exeDir() / L"ai" / L"seedvr2").wstring() + L"\"";
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE, nullptr, nullptr, &si, &pi)) {
+        MessageBoxW(hwnd, L"The SeedVR2 installer could not be started.", L"SeedVR2", MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
+}
+
 std::wstring iniPath() {
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
@@ -97,6 +148,13 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_COMMAND:
             if (!st) break;
             switch (LOWORD(wp)) {
+                case kIdVideo:
+                    // choosing SeedVR2 the first time: offer to install it (playing works without it,
+                    // from the x4plus pictures, but its cache can only be built once it is installed)
+                    if (HIWORD(wp) == CBN_SELCHANGE && SendMessageW(st->video, CB_GETCURSEL, 0, 0) == 3 &&
+                        !seedvr2Installed())
+                        offerSeedvr2Install(hwnd);
+                    return 0;
                 case kIdBrowse: {
                     wchar_t file[MAX_PATH] = L"";
                     OPENFILENAMEW ofn{};
@@ -131,6 +189,10 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     }
                     // the cache for the Video choice: SeedVR2 has its own
                     const bool seedvr = SendMessageW(st->video, CB_GETCURSEL, 0, 0) == 3;
+                    if (seedvr && !seedvr2Installed()) {
+                        offerSeedvr2Install(hwnd);
+                        return 0;
+                    }
                     const wchar_t* text =
                         seedvr ? L"This decodes every movie and background frame on all four discs found next to "
                                  L"disc 1 and enlarges them with SeedVR2, as video, into the file hdcache/seedvr2.pack.\n\n"
