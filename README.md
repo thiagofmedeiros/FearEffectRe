@@ -70,6 +70,12 @@ The AI modes need a DirectX 12 graphics card.
 |---|---|---|
 | ![Intro movie, original](docs/screenshots/movie-original.jpg) | ![Intro movie, AI](docs/screenshots/movie-ai.jpg) | ![Intro movie, SeedVR2](docs/screenshots/movie-seedvr2.jpg) |
 
+Videos of the three modes side by side, captured at 4K:
+
+| Intro movie | Opening cutscene |
+|---|---|
+| [![Intro movie: original, best and SeedVR2](https://img.youtube.com/vi/nXTX44fFRds/hqdefault.jpg)](https://youtu.be/nXTX44fFRds) | [![Opening cutscene: original, best and SeedVR2](https://img.youtube.com/vi/PY5YANKhIxA/hqdefault.jpg)](https://youtu.be/PY5YANKhIxA) |
+
 ### Modern movement (optional)
 
 The original uses tank controls: up walks forward, left and right turn on the spot. With
