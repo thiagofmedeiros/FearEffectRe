@@ -1,5 +1,6 @@
 #include "Launcher.h"
 
+#include "CheatList.h"
 #include "Controls.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -55,13 +56,21 @@ std::vector<Display> listDisplays() {
 
 namespace {
 
-enum : int { kIdPath = 101, kIdBrowse, kIdResolution, kIdFullscreen, kIdPlay, kIdQuit, kIdDisplay, kIdVideo, kIdBuildCache, kIdModern, kIdWidescreen, kIdHealth, kIdAmmo, kIdControls };
+enum : int { kIdPath = 101, kIdBrowse, kIdResolution, kIdFullscreen, kIdPlay, kIdQuit, kIdDisplay, kIdVideo, kIdBuildCache, kIdModern, kIdWidescreen, kIdHealth, kIdAmmo, kIdControls, kIdCheats };
 
 struct State {
     HWND path = nullptr, combo = nullptr, full = nullptr, display = nullptr;
     HWND video = nullptr, modern = nullptr, widescreen = nullptr, health = nullptr, ammo = nullptr;
+    HWND moreCheats = nullptr;
     bool play = false, done = false;
 };
+
+// "More cheats..." shows how many of the cheat list are on.
+void showCheatCount(HWND button) {
+    const size_t n = enabledCheats().size();
+    std::wstring text = n ? L"More cheats (" + std::to_wstring(n) + L")..." : L"More cheats...";
+    SetWindowTextW(button, text.c_str());
+}
 
 std::filesystem::path exeDir() {
     wchar_t exe[MAX_PATH];
@@ -222,6 +231,10 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 }
                 case kIdQuit: st->done = true; return 0;
+                case kIdCheats:
+                    runCheatDialog(hwnd);
+                    showCheatCount(st->moreCheats);
+                    return 0;
                 case kIdControls: {
                     Controls controls = Controls::load(iniPath());
                     runControlsDialog(hwnd, controls, iniPath());
@@ -324,6 +337,8 @@ bool runLauncher(LaunchSettings& settings) {
     st.health = make(L"BUTTON", L"Infinite health", WS_TABSTOP | BS_AUTOCHECKBOX, 100, 194 + extra, 140, 20, kIdHealth);
     SendMessageW(st.health, BM_SETCHECK, health ? BST_CHECKED : BST_UNCHECKED, 0);
     st.ammo = make(L"BUTTON", L"Infinite ammo", WS_TABSTOP | BS_AUTOCHECKBOX, 250, 194 + extra, 140, 20, kIdAmmo);
+    st.moreCheats = make(L"BUTTON", L"More cheats...", WS_TABSTOP, 394, 190 + extra, 110, 28, kIdCheats);
+    showCheatCount(st.moreCheats);
     SendMessageW(st.ammo, BM_SETCHECK, ammo ? BST_CHECKED : BST_UNCHECKED, 0);
     make(L"STATIC", L"The picture keeps its shape: 4:3, or 2:1 in widescreen.", 0, 16, 222 + extra, 488, 18, 0);
     make(L"BUTTON", L"Build HD cache...", WS_TABSTOP, 16, 256 + extra, 140, 30, kIdBuildCache);
@@ -373,6 +388,8 @@ bool runLauncher(LaunchSettings& settings) {
         settings.infiniteAmmo = SendMessageW(st.ammo, BM_GETCHECK, 0, 0) == BST_CHECKED;
         WritePrivateProfileStringW(L"cheats", L"health", settings.infiniteHealth ? L"1" : L"0", ini.c_str());
         WritePrivateProfileStringW(L"cheats", L"ammo", settings.infiniteAmmo ? L"1" : L"0", ini.c_str());
+        settings.cheats = enabledCheats();
+        settings.cheatFile = narrow(cheatFilePath());
     }
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
     DestroyWindow(hwnd);

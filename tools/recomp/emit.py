@@ -292,16 +292,20 @@ def emit_module(img: Image, funcs: dict[int, Function], outdir: str, shards: int
             if ins.op == "j" and ins.target in f.tail_calls:
                 meta[a] = 2
     lines = [banner, f'#include "fe_{module}_decl.h"', "#include <vector>", "namespace fe {",
-             "namespace {", "struct Entry { u32 addr; GuestFn fn; };", "const Entry kEntries[] = {"]
-    lines += [f"    {{{_u(f.addr)}, {fn_name(f.addr)}}}," for f in ordered]
+             "namespace {", "struct Entry { u32 addr; GuestFn fn; u32 end; };", "const Entry kEntries[] = {"]
+    lines += [f"    {{{_u(f.addr)}, {fn_name(f.addr)}, {_u(max(f.insns) + 4)}}}," for f in ordered]
     lines += ["};", "const JumpMeta kMeta[] = {"]
     lines += [f"    {{{_u(a)}, {k}}}," for a, k in sorted(meta.items())] or ["    {0, 0},"]
     lines += ["};", "}  // namespace", "",
               f"// {len(ordered)} functions, {total} instructions",
               f"RecompModule {module}Module() {{",
               f"    static std::vector<GuestFn> table({_u(len(img.data) // 4)});",
-              "    for (const Entry& e : kEntries) table[(e.addr - " + _u(img.base) + ") >> 2] = e.fn;",
-              f'    return RecompModule{{"{module}", {_u(img.base)}, {_u(len(img.data))}, table.data()}};',
+              f"    static std::vector<u32> ends({_u(len(img.data) // 4)});",
+              "    for (const Entry& e : kEntries) {",
+              "        table[(e.addr - " + _u(img.base) + ") >> 2] = e.fn;",
+              "        ends[(e.addr - " + _u(img.base) + ") >> 2] = e.end;",
+              "    }",
+              f'    return RecompModule{{"{module}", {_u(img.base)}, {_u(len(img.data))}, table.data(), ends.data()}};',
               "}",
               f"const JumpMeta* {module}JumpMeta(size_t& count) {{",
               "    count = sizeof(kMeta) / sizeof(kMeta[0]);",

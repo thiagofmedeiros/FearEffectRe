@@ -48,6 +48,7 @@ struct RecompModule {
     u32 base;
     u32 size;
     const GuestFn* table;
+    const u32* ends = nullptr;  // per entry: the address after the function's last instruction
 };
 
 // How a `j` or `jr` that the recompiler classified leaves its function.
@@ -122,6 +123,15 @@ struct Machine {
     std::vector<JumpMeta> jumpMeta;
     Hooks hooks;
     bool nativeEnabled = true;
+    // Calls between recompiled functions go through call() (set with a call
+    // hook, or when some functions must be interpreted).
+    bool slowCalls = false;
+    // Recompiled functions not to use: their code in RAM was changed (cheat
+    // codes that patch instructions), so the interpreter runs them instead.
+    std::vector<u32> interpreted;  // sorted function entry addresses
+    // Runs the recompiled function containing `addr` in the interpreter from
+    // now on. Returns its entry address, or 0 if `addr` is in no recompiled code.
+    u32 interpretFunctionAt(u32 addr);
 
     GuestFn lookup(u32 pc) const;
     const JumpMeta* findJumpMeta(u32 pc) const;

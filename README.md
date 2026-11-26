@@ -96,6 +96,18 @@ first area of disc 1.
 published GameShark codes `80077810 0002` and `0001` enable). With infinite ammo the spare
 ammunition never runs out; the gun still reloads when its clip is empty.
 
+**More cheats...** in the launcher lists the 192 cheats of DuckStation's cheat database for
+Fear Effect (weapons and items for each character, stop time, no fear and more): tick the ones
+to use, or type in **Find** to narrow the list. The first time, it offers to download the list
+from [github.com/duckstation/chtdb](https://github.com/duckstation/chtdb) into the `cheats`
+folder next to the program; the cheats are by their authors and are not part of this
+repository. The ones chosen are kept in `cheats/enabled.txt`. Some cheats can stop the game from
+working properly; turn them off if it misbehaves.
+
+A few cheats change the game's code rather than its data (Infinite Ammo, Stop Time, No Fear).
+The recompiled code never reads the game's instructions back from memory, so the functions
+they change run in the interpreter instead while the cheat is on, which makes them slower.
+
 ### Save states
 
 F6 saves the whole game at the moment you press it and F7 brings it back, anywhere, not only
@@ -117,7 +129,8 @@ state remembers which disc was in the drive.
   game, or **Controls...** in the launcher).
 - **Analog pad** (optional): the game sees a DualShock in analog mode and reads its left stick.
 - **Sound**: volume, mute and latency in `FearEffectRe.ini` or on the command line.
-- **Cheat files**: DuckStation `.cht` files with GameShark codes (`--cheats file.cht`).
+- **More cheats**: DuckStation's cheat list for Fear Effect, chosen in the launcher, or any
+  DuckStation `.cht` file (`--cheats file.cht`).
 - **Disc check**: `--verify-disc` compares the four disc images with the Redump dumps and checks
   every sector for damage, so a good image that is not the Redump dump can be told from a bad one.
 
@@ -196,8 +209,10 @@ FearEffectRe "D:/path/Fear Effect (USA) (Disc 1).cue" --resolution 1080p --fulls
 loads faster, `--load-state FILE` starts from a save state.
 
 `--cheats file.cht` applies the cheats of a DuckStation cheat file every frame: all of them, or
-only the ones named with `--cheat "Name"` (repeat it for several). Codes 80 and 30 (write),
-10, 11, 20 and 21 (add and subtract) and D0 to D3, E0 to E3 (conditions) are supported.
+only the ones named with `--cheat "Name"` (repeat it for several; a cheat in a group is named
+`Group\Name`). Codes 80, 30 and 90 (write 16, 8 and 32 bits), 10, 11, 20 and 21 (add and
+subtract) and D0 to D3, E0 to E3 (conditions) are supported; a cheat with any other code is
+left out.
 
 `--record file` writes the controller input of every frame (and disc changes) to a text file,
 and `--replay file` plays the game with exactly that input again, which reproduces the session

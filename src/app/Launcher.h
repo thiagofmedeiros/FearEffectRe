@@ -35,6 +35,8 @@ struct LaunchSettings {
     bool modern = false; // screen-relative movement instead of tank controls
     bool widescreen = false;  // gameplay and movies without the black bands, filling the width
     bool infiniteHealth = false, infiniteAmmo = false;  // the game's own cheats
+    std::string cheatFile;              // DuckStation cheat file, and the cheats of it to use
+    std::vector<std::string> cheats;
 };
 
 // FearEffectRe.ini next to the program.

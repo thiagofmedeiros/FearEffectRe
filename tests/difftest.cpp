@@ -83,6 +83,7 @@ int main(int argc, char** argv) {
     std::array<u8, 0x400> scratchA{};
 
     u64 trace = 0;
+    m.slowCalls = true;
     m.hooks.call = [&](Cpu& c, u32 target) {
         trace = mix(trace, target);
         for (int i = 4; i < 8; ++i) trace = mix(trace, c.r[i]);

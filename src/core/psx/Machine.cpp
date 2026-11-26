@@ -106,9 +106,34 @@ void Machine::loadExe(const std::vector<u8>& exe) {
 GuestFn Machine::lookup(u32 pc) const {
     for (const auto& mod : modules) {
         u32 off = pc - mod.base;
-        if (off < mod.size && !(off & 3)) return mod.table[off >> 2];
+        if (off < mod.size && !(off & 3)) {
+            if (!interpreted.empty() && std::binary_search(interpreted.begin(), interpreted.end(), pc)) return nullptr;
+            return mod.table[off >> 2];
+        }
     }
     return nullptr;
+}
+
+u32 Machine::interpretFunctionAt(u32 addr) {
+    addr &= ~3u;
+    for (const auto& mod : modules) {
+        u32 off = addr - mod.base;
+        if (off >= mod.size) continue;
+        // the function is the nearest entry at or before the address, if
+        // the address is among its instructions (not data after it)
+        for (u32 i = off >> 2;; --i) {
+            if (mod.table[i]) {
+                const u32 entry = mod.base + i * 4;
+                if (mod.ends && addr >= mod.ends[i]) return 0;
+                auto it = std::lower_bound(interpreted.begin(), interpreted.end(), entry);
+                if (it == interpreted.end() || *it != entry) interpreted.insert(it, entry);
+                slowCalls = true;
+                return entry;
+            }
+            if (i == 0) break;
+        }
+    }
+    return 0;
 }
 
 const JumpMeta* Machine::findJumpMeta(u32 pc) const {

@@ -288,6 +288,8 @@ int main(int argc, char** argv) {
     app::VideoMode videoMode = app::VideoMode::Original;
 #endif
     std::string discPath;
+    std::string launchCheatFile;  // the cheat list's file and the cheats chosen in the launcher
+    std::vector<std::string> launchCheats;
 #if FE_HAVE_WINDOW
     SetProcessDPIAware();  // window sizes are real pixels
     if (argc < 2) {
@@ -302,6 +304,8 @@ int main(int argc, char** argv) {
         widescreen = launch.widescreen;
         infiniteHealth = launch.infiniteHealth;
         infiniteAmmo = launch.infiniteAmmo;
+        launchCheatFile = launch.cheatFile;
+        launchCheats = launch.cheats;
         viaLauncher = true;
         FreeConsole();  // started by double-click: no need for the console window
     }
@@ -324,6 +328,10 @@ int main(int argc, char** argv) {
     unsigned shotEvery = 300;
     std::string statesDir = "states", loadStatePath, saveStateAt, loadStateAt, recordPath, replayPath, cheatsPath;
     std::vector<std::string> cheatNames;
+    if (!launchCheats.empty()) {
+        cheatsPath = launchCheatFile;
+        cheatNames = launchCheats;
+    }
     int cdSpeed = 1;
     int volume = -1, audioLatency = -1;  // -1: from FearEffectRe.ini
     bool mute = false;
@@ -475,6 +483,11 @@ int main(int argc, char** argv) {
         fe::Machine m;
         m.loadExe(exe);
         const fe::u32 exeCrc = crc32(exe.data() + 0x800, exe.size() - 0x800);  // save states belong to this executable
+        auto rd = [&](size_t off) {  // a word of the executable's header
+            fe::u32 v;
+            std::memcpy(&v, exe.data() + off, 4);
+            return v;
+        };
         m.cd = std::make_shared<fe::Cdrom>(discPtr);
         m.cd->traceLeft = logCd;
         m.cd->speed = cdSpeed;
@@ -614,8 +627,15 @@ int main(int argc, char** argv) {
         if (!cheatsPath.empty()) {
             cheats = std::make_unique<app::Cheats>(cheatsPath, cheatNames);
             for (const auto& c : cheats->active()) std::printf("cheat   %s (%zu codes)\n", c.name.c_str(), c.codes.size());
-            for (const auto& s : cheats->skipped) std::printf("cheat   code type not supported, skipped: %s\n", s.c_str());
+            for (const auto& s : cheats->skipped) std::printf("cheat   %s: a code type that is not supported, left out\n", s.c_str());
             if (cheats->active().empty()) std::printf("cheat   no cheats loaded from %s\n", cheatsPath.c_str());
+            // Cheats that change the game's code: the recompiled copy of that
+            // code would ignore them, so those functions run in the interpreter.
+            const fe::u32 textStart = rd(0x18) & 0x1FFFFF, textEnd = textStart + rd(0x1C);
+            for (fe::u32 at : cheats->writes())
+                if (at >= textStart && at < textEnd)
+                    if (fe::u32 fn = m.interpretFunctionAt(0x80000000u | at))
+                        std::printf("cheat   patches code at %08x: function %08x runs in the interpreter\n", 0x80000000u | at, fn);
         }
         auto insertDisc = [&](int number) {
             std::string path = discPathFor(discPath, number);
