@@ -233,6 +233,8 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 }  // namespace
 
+std::wstring settingsPath() { return iniPath(); }
+
 bool runLauncher(LaunchSettings& settings) {
     std::wstring ini = iniPath();
     wchar_t buf[MAX_PATH];

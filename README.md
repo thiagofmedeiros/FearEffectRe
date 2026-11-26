@@ -96,13 +96,26 @@ first area of disc 1.
 published GameShark codes `80077810 0002` and `0001` enable). With infinite ammo the spare
 ammunition never runs out; the gun still reloads when its clip is empty.
 
+### Save states
+
+F6 saves the whole game at the moment you press it and F7 brings it back, anywhere, not only
+where the game lets you save. There are nine slots: F8 picks the next one, Shift+F8 the
+previous one. They are files in the `states` folder (`--states dir` keeps them elsewhere), and a
+state remembers which disc was in the drive.
+
 ### Everything else
 
 - **Smoother on a PC**: the renderer uses several CPU threads and OpenGL to show the picture.
 - **Saves are files**: the memory card in slot 1 is a `saves` folder, one file per save.
 - **Disc changes** are a key press (F2 to F5), the other discs are found next to the first.
 - **Fast-forward** with F1.
-- **Keyboard and Xbox controller**, no adapter needed.
+- **Window or fullscreen**: F11 or Alt+Enter switches while playing.
+- **Faster loading** (optional): `--cd-speed 4` reads the disc four times as fast (up to 8).
+  Movies, the moving backgrounds and the music still play at their own speed.
+- **Keyboard and Xbox controller**, no adapter needed, with the buttons set in `FearEffectRe.ini`.
+- **Sound**: volume, mute and latency in `FearEffectRe.ini` or on the command line.
+- **Cheat files**: DuckStation `.cht` files with GameShark codes (`--cheats file.cht`).
+- **Disc check**: `--verify-disc` checks every sector of the four disc images for damage.
 
 ## Playing
 
@@ -123,7 +136,38 @@ then press **Play**. The choices are remembered in `FearEffectRe.ini` next to th
 | Start / Select | P / Backspace | Start / Back |
 
 F1 fast-forwards, F2 to F5 insert disc 1 to 4 (found next to the first by their `(Disc N)`
-name).
+name), F6 saves a state, F7 loads it, F8 / Shift+F8 change the slot, F11 or Alt+Enter switches
+between a window and fullscreen.
+
+### Controls and sound settings
+
+The first time the game runs it adds the buttons to `FearEffectRe.ini`; change them there. Each
+PlayStation button takes a list of keys and a list of controller buttons:
+
+```ini
+[keyboard]
+cross=E, Enter
+circle=Q, Esc
+[controller]
+cross=A
+l2=LT
+deadzone=37
+stick_as_dpad=1
+[audio]
+volume=100
+mute=0
+latency=100
+```
+
+Keys are letters, digits, `Up` `Down` `Left` `Right` `Enter` `Esc` `Space` `Tab` `Backspace`
+`LShift` `RShift` `LCtrl` `RCtrl` `Alt` `Home` `End` `PageUp` `PageDown` `Insert` `Delete`
+`F9` `F10` `F12` `Numpad0`-`Numpad9` `Comma` `Period` `Semicolon` `Slash`. Controller buttons
+are `A` `B` `X` `Y` `LB` `RB` `LT` `RT` `Back` `Start` `LS` `RS` `DPadUp` `DPadDown`
+`DPadLeft` `DPadRight`. The buttons are `select` `start` `up` `down` `left` `right` `l1` `r1`
+`l2` `r2` `triangle` `circle` `cross` `square` (and `l3` `r3`, which this game does not use).
+`deadzone` is how far the left stick has to move (percent) and `stick_as_dpad=0` stops it
+pressing the D-pad. `latency` is how much sound is queued ahead, in milliseconds (40 to 340):
+lower is more immediate, higher is safer on a busy PC.
 
 The same can be given on the command line, which starts the game directly:
 
@@ -133,6 +177,16 @@ FearEffectRe "D:/path/Fear Effect (USA) (Disc 1).cue" --resolution 1080p --fulls
 ```
 
 `--saves dir` keeps saves in another folder, `--saves none` plays without a memory card.
+`--volume 0-100`, `--mute` and `--audio-latency MS` override the ini file, `--cd-speed N`
+loads faster, `--load-state FILE` starts from a save state.
+
+`--cheats file.cht` applies the cheats of a DuckStation cheat file every frame: all of them, or
+only the ones named with `--cheat "Name"` (repeat it for several). Codes 80 and 30 (write),
+10, 11, 20 and 21 (add and subtract) and D0 to D3, E0 to E3 (conditions) are supported.
+
+`--record file` writes the controller input of every frame (and disc changes) to a text file,
+and `--replay file` plays the game with exactly that input again, which reproduces the session
+frame for frame. Record from the start of the game, not after loading a state.
 
 ## Status
 
@@ -187,7 +241,8 @@ registers. `--input` presses buttons at given frames (`*n` holds for n frames), 
 writes a PNG every `--every` frames (`--hd-shots` at the internal resolution), `--dump` and
 `--dump-vram` write the last picture and video memory, `--ram dir` writes main memory next to
 each screenshot (from frame `--ram-from N`; for finding game variables), `--wav` writes the
-sound, `--swap frame:disc` changes disc. `--interpreter` runs without the recompiled code;
+sound, `--swap frame:disc` changes disc, `--save-state-at frame:file` and
+`--load-state-at frame:file` write and load a save state while running. `--interpreter` runs without the recompiled code;
 `--log-bios`, `--log-cd N` and `--log-sio N` trace calls and register accesses.
 
 ```sh
@@ -226,3 +281,11 @@ address.
 Known simplifications: load delay slots and arithmetic overflow traps are not modelled (the
 executable was scanned and does not depend on load delays), every instruction costs two
 cycles, and `longjmp` is not supported.
+
+Save states have to cope with the guest's calls living on the host's C++ stack. A state is
+taken only at a point where the whole guest state is in the machine: at the start of a
+straight-line block, when its time slice runs out (the block's address is stored in `pc` just
+before), outside interrupt handlers and BIOS event callbacks. Loading throws an exception that
+unwinds every host frame, restores the machine, and starts the interpreter at the saved `pc`.
+It runs the rest of the interrupted functions and hands over to recompiled code at the next
+call. A run that loads a state continues frame for frame like the run that saved it.

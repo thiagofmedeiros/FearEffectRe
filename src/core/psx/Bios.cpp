@@ -112,7 +112,9 @@ void Machine::deliverEvent(Cpu& c, u32 cls, u32 spec) {
             std::copy(std::begin(c.r), std::end(c.r), saved);
             const u32 hi = c.hi, lo = c.lo;
             c.r[31] = 0xBFC0FFF0;
+            ++hostFrames;
             call(c, ev.func);
+            --hostFrames;
             std::copy(std::begin(saved), std::end(saved), c.r);
             c.hi = hi;
             c.lo = lo;

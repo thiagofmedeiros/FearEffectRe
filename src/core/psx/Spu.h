@@ -23,6 +23,7 @@ struct Spu {
 
     u64 keyOns = 0;
 
+    void state(StateIO& io);
 private:
     struct Voice {
         u32 addr = 0, repeat = 0;   // in bytes

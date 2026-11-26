@@ -30,6 +30,9 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <cwctype>
 #include <thread>
 
 namespace app {
@@ -53,8 +56,190 @@ GetPadState loadXInput() {
 }
 }  // namespace
 
+// ---- controls ----------------------------------------------------------------
+
+const char* const Controls::kButtonNames[16] = {"select", "l3", "r3",       "start",  "up",    "right", "down", "left",
+                                                "l2",     "r2", "l1",       "r1",     "triangle", "circle", "cross", "square"};
+
+namespace {
+
+struct Named {
+    const wchar_t* name;
+    unsigned code;
+};
+
+// Key names for the ini file; letters and digits are written as themselves.
+const Named kKeyNames[] = {
+    {L"Up", VK_UP}, {L"Down", VK_DOWN}, {L"Left", VK_LEFT}, {L"Right", VK_RIGHT}, {L"Enter", VK_RETURN},
+    {L"Esc", VK_ESCAPE}, {L"Space", VK_SPACE}, {L"Tab", VK_TAB}, {L"Backspace", VK_BACK}, {L"LShift", VK_LSHIFT},
+    {L"RShift", VK_RSHIFT}, {L"LCtrl", VK_LCONTROL}, {L"RCtrl", VK_RCONTROL}, {L"Alt", VK_MENU}, {L"Home", VK_HOME},
+    {L"End", VK_END}, {L"PageUp", VK_PRIOR}, {L"PageDown", VK_NEXT}, {L"Insert", VK_INSERT}, {L"Delete", VK_DELETE},
+    {L"F9", VK_F9}, {L"F10", VK_F10}, {L"F12", VK_F12}, {L"Numpad0", VK_NUMPAD0}, {L"Numpad1", VK_NUMPAD1},
+    {L"Numpad2", VK_NUMPAD2}, {L"Numpad3", VK_NUMPAD3}, {L"Numpad4", VK_NUMPAD4}, {L"Numpad5", VK_NUMPAD5},
+    {L"Numpad6", VK_NUMPAD6}, {L"Numpad7", VK_NUMPAD7}, {L"Numpad8", VK_NUMPAD8}, {L"Numpad9", VK_NUMPAD9},
+    {L"Comma", VK_OEM_COMMA}, {L"Period", VK_OEM_PERIOD}, {L"Semicolon", VK_OEM_1}, {L"Slash", VK_OEM_2},
+};
+
+constexpr unsigned kPadLT = 0x10000, kPadRT = 0x20000;
+const Named kPadNames[] = {
+    {L"A", 0x1000}, {L"B", 0x2000}, {L"X", 0x4000}, {L"Y", 0x8000}, {L"LB", 0x0100}, {L"RB", 0x0200},
+    {L"LT", kPadLT}, {L"RT", kPadRT}, {L"Back", 0x0020}, {L"Start", 0x0010}, {L"LS", 0x0040}, {L"RS", 0x0080},
+    {L"DPadUp", 0x0001}, {L"DPadDown", 0x0002}, {L"DPadLeft", 0x0004}, {L"DPadRight", 0x0008},
+};
+
+std::wstring keyName(int vk) {
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) return std::wstring(1, static_cast<wchar_t>(vk));
+    for (const Named& n : kKeyNames)
+        if (static_cast<int>(n.code) == vk) return n.name;
+    return L"";
+}
+
+bool sameName(const std::wstring& a, const wchar_t* b) { return _wcsicmp(a.c_str(), b) == 0; }
+
+int keyCode(const std::wstring& name) {
+    if (name.size() == 1) {
+        wchar_t ch = static_cast<wchar_t>(std::towupper(name[0]));
+        if ((ch >= L'A' && ch <= L'Z') || (ch >= L'0' && ch <= L'9')) return ch;
+    }
+    for (const Named& n : kKeyNames)
+        if (sameName(name, n.name)) return static_cast<int>(n.code);
+    return 0;
+}
+
+unsigned padCode(const std::wstring& name) {
+    for (const Named& n : kPadNames)
+        if (sameName(name, n.name)) return n.code;
+    return 0;
+}
+
+std::wstring padName(unsigned code) {
+    for (const Named& n : kPadNames)
+        if (n.code == code) return n.name;
+    return L"";
+}
+
+std::vector<std::wstring> splitList(const std::wstring& text) {
+    std::vector<std::wstring> out;
+    size_t pos = 0;
+    while (pos <= text.size()) {
+        size_t end = text.find(L',', pos);
+        if (end == std::wstring::npos) end = text.size();
+        std::wstring item = text.substr(pos, end - pos);
+        size_t a = item.find_first_not_of(L" \t"), b = item.find_last_not_of(L" \t");
+        if (a != std::wstring::npos) out.push_back(item.substr(a, b - a + 1));
+        pos = end + 1;
+    }
+    return out;
+}
+
+std::wstring widenAscii(const char* s) { return std::wstring(s, s + std::strlen(s)); }
+
+bool down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
+
+}  // namespace
+
+Controls Controls::defaults() {
+    Controls c;
+    auto k = [&](int bit, std::initializer_list<int> keys) { c.keys[bit] = keys; };
+    k(0, {VK_BACK});
+    k(3, {'P'});
+    k(4, {'W', VK_UP});
+    k(5, {'D', VK_RIGHT});
+    k(6, {'S', VK_DOWN});
+    k(7, {'A', VK_LEFT});
+    k(8, {'1'});
+    k(9, {'4'});
+    k(10, {VK_TAB});
+    k(11, {'R'});
+    k(12, {VK_SPACE});
+    k(13, {'Q', VK_ESCAPE});
+    k(14, {'E', VK_RETURN});
+    k(15, {'F'});
+    auto p = [&](int bit, std::initializer_list<unsigned> codes) { c.pad[bit] = codes; };
+    p(0, {0x0020});
+    p(3, {0x0010});
+    p(4, {0x0001});
+    p(5, {0x0008});
+    p(6, {0x0002});
+    p(7, {0x0004});
+    p(8, {kPadLT});
+    p(9, {kPadRT});
+    p(10, {0x0100});
+    p(11, {0x0200});
+    p(12, {0x8000});
+    p(13, {0x2000});
+    p(14, {0x1000});
+    p(15, {0x4000});
+    return c;
+}
+
+Controls Controls::load(const std::wstring& ini) {
+    Controls c = defaults();
+    wchar_t buf[512];
+    // a missing section is written out with the defaults, so it can be edited
+    const bool haveKeys = GetPrivateProfileSectionW(L"keyboard", buf, 512, ini.c_str()) > 0;
+    const bool havePad = GetPrivateProfileSectionW(L"controller", buf, 512, ini.c_str()) > 0;
+    for (int bit = 0; bit < 16; ++bit) {
+        const std::wstring button = widenAscii(kButtonNames[bit]);
+        if (haveKeys) {
+            GetPrivateProfileStringW(L"keyboard", button.c_str(), L"", buf, 512, ini.c_str());
+            c.keys[bit].clear();
+            for (const auto& name : splitList(buf))
+                if (int vk = keyCode(name)) c.keys[bit].push_back(vk);
+        } else {
+            std::wstring list;
+            for (int vk : c.keys[bit]) list += (list.empty() ? L"" : L", ") + keyName(vk);
+            WritePrivateProfileStringW(L"keyboard", button.c_str(), list.c_str(), ini.c_str());
+        }
+        if (havePad) {
+            GetPrivateProfileStringW(L"controller", button.c_str(), L"", buf, 512, ini.c_str());
+            c.pad[bit].clear();
+            for (const auto& name : splitList(buf))
+                if (unsigned code = padCode(name)) c.pad[bit].push_back(code);
+        } else {
+            std::wstring list;
+            for (unsigned code : c.pad[bit]) list += (list.empty() ? L"" : L", ") + padName(code);
+            WritePrivateProfileStringW(L"controller", button.c_str(), list.c_str(), ini.c_str());
+        }
+    }
+    if (havePad) {
+        c.deadzone = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"controller", L"deadzone", c.deadzone, ini.c_str())), 0, 90);
+        c.stickAsDpad = GetPrivateProfileIntW(L"controller", L"stick_as_dpad", 1, ini.c_str()) != 0;
+    } else {
+        WritePrivateProfileStringW(L"controller", L"deadzone", std::to_wstring(c.deadzone).c_str(), ini.c_str());
+        WritePrivateProfileStringW(L"controller", L"stick_as_dpad", L"1", ini.c_str());
+    }
+    return c;
+}
+
+// ---- window --------------------------------------------------------------------
+
 struct Window::Impl {
     HWND hwnd = nullptr;
+    Controls controls = Controls::defaults();
+    int volume = 100;  // percent, 0 when muted
+    bool keyWas[256]{};
+    bool edge(int vk, bool focused) {
+        const bool now = focused && down(vk);
+        const bool pressed = now && !keyWas[vk];
+        keyWas[vk] = now;
+        return pressed;
+    }
+    // status line drawn over the picture
+    std::string statusText;
+    LARGE_INTEGER statusUntil{};
+    GLuint font = 0;  // display lists for characters 32..127
+    bool statusVisible() const {
+        if (statusText.empty()) return false;
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        return now.QuadPart < statusUntil.QuadPart;
+    }
+    void drawStatusGl(int cw, int ch);
+    void drawStatusGdi(HDC dc);
+    // window / fullscreen switching
+    bool fullscreen = false;
+    RECT windowed{};  // window rectangle to go back to
     bool closed = false;
     LARGE_INTEGER freq{}, next{};
     std::vector<std::uint8_t> bgr;
@@ -166,7 +351,7 @@ struct Window::Impl {
     // Blocks handed to the sound card and not played yet. The frame timer is
     // nudged to keep this between kAudioLow and kAudioHigh, so a slow frame
     // does not empty the queue (a crack) and clock drift does not overfill it.
-    static constexpr int kAudioLow = 4, kAudioHigh = 7;
+    int audioLow = 4, audioHigh = 7;
     int queued() const {
         int n = 0;
         for (const WAVEHDR& h : headers)
@@ -248,7 +433,48 @@ void Window::Impl::draw(GLenum format, GLenum type, const void* pixels, int stri
         glDisable(GL_BLEND);
     }
     overlayReady = false;
+    drawStatusGl(cw, ch);
     SwapBuffers(glDc);
+}
+
+void Window::Impl::drawStatusGl(int cw, int ch) {
+    if (!statusVisible()) return;
+    const int size = std::max(16, ch / 30);
+    if (!font) {
+        HFONT f = CreateFontW(-size, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Segoe UI");
+        HGDIOBJ old = SelectObject(glDc, f);
+        font = glGenLists(96);
+        wglUseFontBitmapsW(glDc, 32, 96, font);
+        SelectObject(glDc, old);
+        DeleteObject(f);
+    }
+    glViewport(0, 0, cw, ch);
+    glDisable(GL_TEXTURE_2D);
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    glOrtho(0, cw, 0, ch, -1, 1);
+    const int x = std::max(12, cw / 60), y = ch - size - std::max(12, ch / 60);
+    glListBase(font - 32);
+    for (int pass = 0; pass < 2; ++pass) {
+        if (pass == 0) glColor3f(0, 0, 0);
+        else glColor3f(1, 1, 1);
+        glRasterPos2i(x + (pass == 0 ? 2 : 0), y - (pass == 0 ? 2 : 0));
+        glCallLists(static_cast<GLsizei>(statusText.size()), GL_UNSIGNED_BYTE, statusText.data());
+    }
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
+    glColor3f(1, 1, 1);
+    glEnable(GL_TEXTURE_2D);
+}
+
+void Window::Impl::drawStatusGdi(HDC dc) {
+    if (!statusVisible()) return;
+    SetBkMode(dc, TRANSPARENT);
+    for (int pass = 0; pass < 2; ++pass) {
+        SetTextColor(dc, pass == 0 ? RGB(0, 0, 0) : RGB(255, 255, 255));
+        TextOutA(dc, 16 - pass * 2, 16 - pass * 2, statusText.c_str(), static_cast<int>(statusText.size()));
+    }
 }
 
 namespace {
@@ -259,10 +485,15 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (msg == WM_CLOSE) DestroyWindow(hwnd);
         return 0;
     }
+    auto* window = reinterpret_cast<Window*>(GetPropW(hwnd, L"FearEffectRe.window"));
+    const bool firstPress = (lp & (1 << 30)) == 0;  // not a key repeat
+    if (window && firstPress && ((msg == WM_SYSKEYDOWN && wp == VK_RETURN) || (msg == WM_KEYDOWN && wp == VK_F11))) {
+        window->toggleFullscreen();
+        return 0;
+    }
+    if (msg == WM_SYSCHAR || (msg == WM_SYSKEYDOWN && wp == VK_F10)) return 0;  // no beep, no menu
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
-
-bool down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
 
 }  // namespace
 
@@ -279,6 +510,15 @@ Window::Window(int width, int height, bool fullscreen, int display) : impl_(new 
     int screenW = target.width, screenH = target.height;
     // a window as large as the screen cannot show its frame: go borderless instead
     if (width >= screenW && height >= screenH) fullscreen = true;
+    impl_->fullscreen = fullscreen;
+    {
+        // the window to go back to from fullscreen: the asked size (at most 90% of the screen), centred
+        RECT r{0, 0, std::min(width, screenW * 9 / 10), std::min(height, screenH * 9 / 10)};
+        AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+        const int w = r.right - r.left, h = r.bottom - r.top;
+        const int x = target.x + std::max(0, (screenW - w) / 2), y = target.y + std::max(0, (screenH - h) / 2);
+        impl_->windowed = RECT{x, y, x + w, y + h};
+    }
     if (fullscreen) {
         impl_->hwnd = CreateWindowW(wc.lpszClassName, L"FearEffectRe", WS_POPUP | WS_VISIBLE, target.x, target.y, screenW, screenH,
                                     nullptr, nullptr, wc.hInstance, nullptr);
@@ -292,6 +532,7 @@ Window::Window(int width, int height, bool fullscreen, int display) : impl_(new 
                                     nullptr, nullptr, wc.hInstance, nullptr);
     }
     SetWindowLongPtrW(impl_->hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(impl_));
+    SetPropW(impl_->hwnd, L"FearEffectRe.window", this);
     // OpenGL context; presentation falls back to GDI if any step fails
     impl_->glDc = GetDC(impl_->hwnd);
     PIXELFORMATDESCRIPTOR pfd{};
@@ -362,9 +603,64 @@ void Window::audio(const std::vector<std::int16_t>& stereo) {
     // a cushion again, instead of crackling block by block
     if (impl_->queued() == 0) {
         std::vector<std::int16_t> silence(stereo.size(), 0);
-        for (int i = 0; i < Impl::kAudioLow; ++i) impl_->write(silence);
+        for (int i = 0; i < impl_->audioLow; ++i) impl_->write(silence);
     }
-    impl_->write(stereo);  // false when every buffer is queued: this block is dropped
+    if (impl_->volume >= 100) {
+        impl_->write(stereo);  // false when every buffer is queued: this block is dropped
+        return;
+    }
+    // the gain is cubic, so loudness follows the setting roughly evenly
+    const double g = std::pow(impl_->volume / 100.0, 3.0);
+    std::vector<std::int16_t> scaled(stereo.size());
+    for (size_t i = 0; i < stereo.size(); ++i) scaled[i] = static_cast<std::int16_t>(std::lround(stereo[i] * g));
+    impl_->write(scaled);
+}
+
+void Window::setAudio(int volume, bool mute, int latencyMs) {
+    impl_->volume = mute ? 0 : std::clamp(volume, 0, 100);
+    // a block is one frame of sound, about 16.7 ms; the queue is kept between low and low + 3 blocks
+    const int blocks = std::clamp((latencyMs + 8) / 17, 3, Impl::kBuffers - 4);
+    impl_->audioLow = std::max(1, blocks - 2);
+    impl_->audioHigh = impl_->audioLow + 3;
+}
+
+void Window::setControls(const Controls& controls) { impl_->controls = controls; }
+
+std::vector<Hotkey> Window::hotkeys() {
+    std::vector<Hotkey> out;
+    const bool focused = GetForegroundWindow() == impl_->hwnd;
+    const bool shift = focused && down(VK_SHIFT);
+    if (impl_->edge(VK_F6, focused)) out.push_back(Hotkey::SaveState);
+    if (impl_->edge(VK_F7, focused)) out.push_back(Hotkey::LoadState);
+    if (impl_->edge(VK_F8, focused)) out.push_back(shift ? Hotkey::PrevSlot : Hotkey::NextSlot);
+    return out;
+}
+
+void Window::status(const std::string& text) {
+    impl_->statusText = text;
+    QueryPerformanceCounter(&impl_->statusUntil);
+    impl_->statusUntil.QuadPart += impl_->freq.QuadPart * 3;
+    std::wstring title = L"FearEffectRe - " + std::wstring(text.begin(), text.end());
+    SetWindowTextW(impl_->hwnd, title.c_str());
+}
+
+void Window::toggleFullscreen() {
+    Impl& im = *impl_;
+    if (im.fullscreen) {
+        SetWindowLongPtrW(im.hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
+        SetWindowPos(im.hwnd, HWND_NOTOPMOST, im.windowed.left, im.windowed.top, im.windowed.right - im.windowed.left,
+                     im.windowed.bottom - im.windowed.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    } else {
+        GetWindowRect(im.hwnd, &im.windowed);
+        MONITORINFO mi{};
+        mi.cbSize = sizeof mi;
+        GetMonitorInfoW(MonitorFromWindow(im.hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+        const RECT& r = mi.rcMonitor;
+        SetWindowLongPtrW(im.hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+        SetWindowPos(im.hwnd, HWND_TOP, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    }
+    im.fullscreen = !im.fullscreen;
+    im.shownCropped = !im.cropped;  // the GDI path clears the window on its next frame
 }
 
 int Window::discRequest() {
@@ -387,21 +683,11 @@ bool Window::fastForward() const { return GetForegroundWindow() == impl_->hwnd &
 
 std::uint16_t Window::buttons() const {
     if (GetForegroundWindow() != impl_->hwnd) return 0;
+    const Controls& ctl = impl_->controls;
     std::uint16_t b = 0;
-    if (down(VK_BACK)) b |= 0x0001;                    // select
-    if (down('P')) b |= 0x0008;                        // start
-    if (down('W') || down(VK_UP)) b |= 0x0010;
-    if (down('D') || down(VK_RIGHT)) b |= 0x0020;
-    if (down('S') || down(VK_DOWN)) b |= 0x0040;
-    if (down('A') || down(VK_LEFT)) b |= 0x0080;
-    if (down('1')) b |= 0x0100;                        // L2
-    if (down('4')) b |= 0x0200;                        // R2
-    if (down(VK_TAB)) b |= 0x0400;                     // L1
-    if (down('R')) b |= 0x0800;                        // R1
-    if (down(VK_SPACE)) b |= 0x1000;                   // triangle
-    if (down('Q') || down(VK_ESCAPE)) b |= 0x2000;     // circle
-    if (down('E') || down(VK_RETURN)) b |= 0x4000;     // cross
-    if (down('F')) b |= 0x8000;                        // square
+    for (int bit = 0; bit < 16; ++bit)
+        for (int vk : ctl.keys[bit])
+            if (down(vk)) b |= static_cast<std::uint16_t>(1u << bit);
 
     // Xbox controller (XInput): the first connected one. Probing empty
     // slots is slow, so that is only done about once a second.
@@ -417,22 +703,19 @@ std::uint16_t Window::buttons() const {
                 }
         }
         if (found) {
-            const int dead = 12000;
-            WORD x = pad.buttons;
-            if (x & 0x0020) b |= 0x0001;                       // Back   -> select
-            if (x & 0x0010) b |= 0x0008;                       // Start  -> start
-            if ((x & 0x0001) || pad.ly > dead) b |= 0x0010;    // up
-            if ((x & 0x0008) || pad.lx > dead) b |= 0x0020;    // right
-            if ((x & 0x0002) || pad.ly < -dead) b |= 0x0040;   // down
-            if ((x & 0x0004) || pad.lx < -dead) b |= 0x0080;   // left
-            if (pad.leftTrigger > 64) b |= 0x0100;             // LT -> L2
-            if (pad.rightTrigger > 64) b |= 0x0200;            // RT -> R2
-            if (x & 0x0100) b |= 0x0400;                       // LB -> L1
-            if (x & 0x0200) b |= 0x0800;                       // RB -> R1
-            if (x & 0x8000) b |= 0x1000;                       // Y  -> triangle
-            if (x & 0x2000) b |= 0x2000;                       // B  -> circle
-            if (x & 0x1000) b |= 0x4000;                       // A  -> cross
-            if (x & 0x4000) b |= 0x8000;                       // X  -> square
+            unsigned held = pad.buttons;
+            if (pad.leftTrigger > 64) held |= kPadLT;
+            if (pad.rightTrigger > 64) held |= kPadRT;
+            for (int bit = 0; bit < 16; ++bit)
+                for (unsigned code : ctl.pad[bit])
+                    if (held & code) b |= static_cast<std::uint16_t>(1u << bit);
+            if (ctl.stickAsDpad) {
+                const int dead = 32767 * ctl.deadzone / 100;
+                if (pad.ly > dead) b |= 0x0010;
+                if (pad.lx > dead) b |= 0x0020;
+                if (pad.ly < -dead) b |= 0x0040;
+                if (pad.lx < -dead) b |= 0x0080;
+            }
         }
     }
     return b;
@@ -443,7 +726,8 @@ bool Window::stick(float& x, float& y) const {
     PadState pad{};
     if (impl_->xinput(impl_->padIndex, &pad) != ERROR_SUCCESS) return false;
     const float fx = pad.lx / 32767.0f, fy = pad.ly / 32767.0f;
-    if (fx * fx + fy * fy < 0.37f * 0.37f) return false;  // same dead zone as the stick-as-D-pad
+    const float dead = impl_->controls.deadzone / 100.0f;  // same dead zone as the stick-as-D-pad
+    if (fx * fx + fy * fy < dead * dead) return false;
     x = fx;
     y = fy;
     return true;
@@ -468,8 +752,8 @@ void Window::pace() {
         LONGLONG period = impl_->freq.QuadPart * 1001 / 60000;
         if (impl_->wave) {
             const int q = impl_->queued();
-            if (q < Impl::kAudioLow) period -= period / 100;
-            else if (q > Impl::kAudioHigh) period += period / 100;
+            if (q < impl_->audioLow) period -= period / 100;
+            else if (q > impl_->audioHigh) period += period / 100;
         }
         impl_->next.QuadPart += period;
         // Fell behind (a slow frame): catch up gently, at most half a
@@ -545,6 +829,7 @@ bool Window::present(const std::vector<std::uint8_t>& rgb, int width, int height
     // the bitmap is stored bottom-up: source rows count from the bottom
     StretchDIBits(dc, (cw - w) / 2, (ch - h) / 2, w, h, 0, height - top - rows, width, rows, impl_->bgr.data(), &bmi,
                   DIB_RGB_COLORS, SRCCOPY);
+    impl_->drawStatusGdi(dc);
     ReleaseDC(impl_->hwnd, dc);
 
     pace();
@@ -628,6 +913,7 @@ bool Window::present(const std::uint16_t* pixels, int stride, int x, int y, int 
     band(0, h / workers);
     for (auto& t : threads) t.join();
     BitBlt(dc, (cw - w) / 2, (ch - h) / 2, w, h, im.surfaceDc, 0, 0, SRCCOPY);
+    im.drawStatusGdi(dc);
     ReleaseDC(im.hwnd, dc);
     pace();
     return true;

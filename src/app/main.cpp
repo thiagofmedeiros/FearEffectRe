@@ -17,6 +17,8 @@
 #include "psx/Mdec.h"
 #include "psx/Spu.h"
 #include "psx/Machine.h"
+#include "Cheats.h"
+#include "InputLog.h"
 #include "ModernControls.h"
 #if FE_HAVE_WINDOW
 #include "Launcher.h"
@@ -110,6 +112,106 @@ std::string discPathFor(const std::string& path, int number) {
     return other;
 }
 
+// Checks every sector of a BIN/CUE image against the error detection code
+// (EDC) stored in it, which finds damaged or badly ripped images without a
+// list of known checksums. Returns the number of bad sectors, or -1 if it cannot tell.
+int discNumber(const std::string& volumeId);
+
+long verifyDisc(const std::string& path) {
+    static fe::u32 table[256];
+    if (!table[1])
+        for (fe::u32 i = 0; i < 256; ++i) {
+            fe::u32 e = i;
+            for (int k = 0; k < 8; ++k) e = (e >> 1) ^ (e & 1 ? 0xD8018001u : 0);
+            table[i] = e;
+        }
+    auto edc = [&](const fe::u8* p, size_t n) {
+        fe::u32 e = 0;
+        for (size_t i = 0; i < n; ++i) e = (e >> 8) ^ table[(e ^ p[i]) & 0xFF];
+        return e;
+    };
+    fe::DiscImage disc(path);
+    std::printf("disc    %s: %s, %u sectors\n", path.c_str(), disc.volumeId().c_str(), disc.sectorCount());
+    if (!discNumber(disc.volumeId())) std::printf("        not a Fear Effect (USA) disc\n");
+    if (!disc.raw()) {
+        std::printf("        2048-byte image: it has no error detection codes to check\n");
+        return -1;
+    }
+    static const fe::u8 sync[12] = {0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0};
+    fe::u8 raw[2352];
+    long bad = 0;
+    for (fe::u32 lba = 0; lba < disc.sectorCount(); ++lba) {
+        if (!disc.readRawSector(lba, raw)) {
+            ++bad;
+            continue;
+        }
+        bool ok = std::memcmp(raw, sync, 12) == 0;
+        if (ok && raw[15] == 2) {
+            fe::u32 stored;
+            if (raw[18] & 0x20) {  // form 2: the EDC is optional (0 = none)
+                std::memcpy(&stored, raw + 2348, 4);
+                ok = stored == 0 || stored == edc(raw + 16, 2332);
+            } else {
+                std::memcpy(&stored, raw + 2072, 4);
+                ok = stored == edc(raw + 16, 2056);
+            }
+        }
+        if (!ok && bad++ < 10) std::printf("        bad sector at lba %u\n", lba);
+    }
+    if (bad) std::printf("        %ld bad sectors: the image is damaged, rip the disc again\n", bad);
+    else std::printf("        every sector is intact\n");
+    return bad;
+}
+
+// Disc number of a volume id, 0 if it is not one of the set.
+int discNumber(const std::string& volumeId) {
+    if (volumeId == "SLUS-00920") return 1;
+    if (volumeId == "SLUS-01056") return 2;
+    if (volumeId == "SLUS-01057") return 3;
+    if (volumeId == "SLUS-01058") return 4;
+    return 0;
+}
+
+// Save state file: a header naming the game executable it belongs to (its
+// CRC) and the disc in the drive, then the machine state.
+constexpr char kStateMagic[8] = {'F', 'E', 'R', 'E', 'S', 'T', 'A', '1'};
+
+bool writeStateFile(const std::string& path, fe::u32 exeCrc, const std::string& volumeId, const std::vector<fe::u8>& payload) {
+    std::error_code ec;
+    std::filesystem::path dir = std::filesystem::path(path).parent_path();
+    if (!dir.empty()) std::filesystem::create_directories(dir, ec);
+    std::string tmp = path + ".tmp";
+    FILE* f = std::fopen(tmp.c_str(), "wb");
+    if (!f) return false;
+    fe::u32 idLen = static_cast<fe::u32>(volumeId.size());
+    bool ok = std::fwrite(kStateMagic, 1, 8, f) == 8 && std::fwrite(&exeCrc, 4, 1, f) == 1 &&
+              std::fwrite(&idLen, 4, 1, f) == 1 && std::fwrite(volumeId.data(), 1, idLen, f) == idLen &&
+              std::fwrite(payload.data(), 1, payload.size(), f) == payload.size();
+    ok = std::fclose(f) == 0 && ok;
+    if (!ok) return false;
+    std::filesystem::rename(tmp, path, ec);  // the old state is replaced only once the new one is complete
+    return !ec;
+}
+
+// Empty string on success, otherwise what is wrong.
+std::string readStateFile(const std::string& path, fe::u32 exeCrc, std::string& volumeId, std::vector<fe::u8>& payload) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return "no save state in " + path;
+    std::vector<fe::u8> all;
+    static fe::u8 chunk[1 << 16];
+    for (size_t n; (n = std::fread(chunk, 1, sizeof chunk, f)) > 0;) all.insert(all.end(), chunk, chunk + n);
+    std::fclose(f);
+    if (all.size() < 16 || std::memcmp(all.data(), kStateMagic, 8) != 0) return path + " is not a save state";
+    fe::u32 crc, idLen;
+    std::memcpy(&crc, all.data() + 8, 4);
+    std::memcpy(&idLen, all.data() + 12, 4);
+    if (crc != exeCrc) return path + " was saved from a different game executable";
+    if (16 + static_cast<size_t>(idLen) > all.size()) return path + " is truncated";
+    volumeId.assign(reinterpret_cast<const char*>(all.data() + 16), idLen);
+    payload.assign(all.begin() + 16 + idLen, all.end());
+    return {};
+}
+
 int usage() {
     std::fprintf(stderr,
                  "usage: FearEffectRe <disc.cue> [--frames N] [--interpreter] [--input script] [--shots dir] [--dump png]\n"
@@ -125,6 +227,15 @@ int usage() {
                  "--modern: the stick or D-pad moves the character in that direction on screen (no tank controls),\n"
                  "--build-hd-cache enlarges every movie and background frame of all discs into the HD cache (hours),\n"
                  "--build-seedvr2-cache does the same with SeedVR2 for --video seedvr2 (days).\n"
+                 "Save states: F6 saves, F7 loads, F8 / Shift+F8 change the slot (1-9), kept in ./states\n"
+                 "(--states dir). --load-state FILE starts from a state, --save-state-at / --load-state-at FRAME:FILE\n"
+                 "write or load one while running.\n"
+                 "--record FILE writes the pad input of every frame, --replay FILE plays it back instead of the pad.\n"
+                 "--cheats FILE loads DuckStation .cht cheats (all of them, or only those named with --cheat NAME).\n"
+                 "--cd-speed N loads data N times as fast as the console (1-8; movies and music keep their speed).\n"
+                 "--verify-disc checks every sector of the disc images for damage.\n"
+                 "--volume 0-100, --mute, --audio-latency MS (40-340, default 100); also in FearEffectRe.ini [audio].\n"
+                 "F11 or Alt+Enter switches between a window and fullscreen. Controls are set in FearEffectRe.ini.\n"
                  "Run without arguments for the launcher.\n");
     return 2;
 }
@@ -177,6 +288,12 @@ int main(int argc, char** argv) {
     fe::u64 audioSamples = 0;
     int audioPeak = 0;
     unsigned shotEvery = 300;
+    std::string statesDir = "states", loadStatePath, saveStateAt, loadStateAt, recordPath, replayPath, cheatsPath;
+    std::vector<std::string> cheatNames;
+    int cdSpeed = 1;
+    int volume = -1, audioLatency = -1;  // -1: from FearEffectRe.ini
+    bool mute = false;
+    bool verifyOnly = false;
     fe::u64 ramFrom = 0;  // first frame --ram writes
     bool hdShots = false;  // --shots at the internal resolution instead of the console's
     for (int i = 2; i < argc; ++i) {
@@ -217,6 +334,19 @@ int main(int argc, char** argv) {
             exportVideo = argv[++i];
             exportDir = argv[++i];
         }
+        else if (a == "--verify-disc") verifyOnly = true;
+        else if (a == "--states" && i + 1 < argc) statesDir = argv[++i];
+        else if (a == "--load-state" && i + 1 < argc) loadStatePath = argv[++i];
+        else if (a == "--save-state-at" && i + 1 < argc) saveStateAt = argv[++i];
+        else if (a == "--load-state-at" && i + 1 < argc) loadStateAt = argv[++i];
+        else if (a == "--record" && i + 1 < argc) recordPath = argv[++i];
+        else if (a == "--replay" && i + 1 < argc) replayPath = argv[++i];
+        else if (a == "--cheats" && i + 1 < argc) cheatsPath = argv[++i];
+        else if (a == "--cheat" && i + 1 < argc) cheatNames.push_back(argv[++i]);
+        else if (a == "--cd-speed" && i + 1 < argc) cdSpeed = std::clamp(std::atoi(argv[++i]), 1, 8);
+        else if (a == "--volume" && i + 1 < argc) volume = std::clamp(std::atoi(argv[++i]), 0, 100);
+        else if (a == "--mute") mute = true;
+        else if (a == "--audio-latency" && i + 1 < argc) audioLatency = std::clamp(std::atoi(argv[++i]), 40, 340);
         else if (a == "--modern") modern = true;
         else if (a == "--widescreen") widescreen = true;
         else if (a == "--infinite-health") infiniteHealth = true;
@@ -259,6 +389,22 @@ int main(int argc, char** argv) {
     }
 #endif
 
+    if (verifyOnly) {
+        // every disc of the set found next to the given one
+        long bad = 0;
+        try {
+            bad += std::max(0L, verifyDisc(discPath));
+            for (int n = 2; n <= 4; ++n) {
+                std::string other = discPathFor(discPath, n);
+                std::error_code ec;
+                if (!other.empty() && other != discPath && std::filesystem::exists(other, ec)) bad += std::max(0L, verifyDisc(other));
+            }
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "error: %s\n", e.what());
+            return 1;
+        }
+        return bad ? 1 : 0;
+    }
     try {
         auto discPtr = std::make_shared<fe::DiscImage>(discPath);
         fe::DiscImage& disc = *discPtr;
@@ -289,8 +435,10 @@ int main(int argc, char** argv) {
 
         fe::Machine m;
         m.loadExe(exe);
+        const fe::u32 exeCrc = crc32(exe.data() + 0x800, exe.size() - 0x800);  // save states belong to this executable
         m.cd = std::make_shared<fe::Cdrom>(discPtr);
         m.cd->traceLeft = logCd;
+        m.cd->speed = cdSpeed;
         m.logBios = logBios;
 #if FE_HAVE_WINDOW
         if (scale == 0 && frames == 0) {
@@ -378,15 +526,45 @@ int main(int argc, char** argv) {
         if (frames == 0)
             window = std::make_unique<app::Window>(app::kResolutions[resolution].width, app::kResolutions[resolution].height,
                                                    fullscreen, display);
-        if (window) window->setWidescreen(widescreen);
+        if (window) {
+            window->setWidescreen(widescreen);
+            // controls and sound settings live in FearEffectRe.ini; the command line overrides the sound ones
+            const std::wstring ini = app::settingsPath();
+            window->setControls(app::Controls::load(ini));
+            if (volume < 0) volume = static_cast<int>(GetPrivateProfileIntW(L"audio", L"volume", 100, ini.c_str()));
+            if (audioLatency < 0) audioLatency = static_cast<int>(GetPrivateProfileIntW(L"audio", L"latency", 100, ini.c_str()));
+            mute = mute || GetPrivateProfileIntW(L"audio", L"mute", 0, ini.c_str()) != 0;
+            wchar_t probe[8];
+            if (!GetPrivateProfileStringW(L"audio", L"volume", L"", probe, 8, ini.c_str())) {
+                WritePrivateProfileStringW(L"audio", L"volume", L"100", ini.c_str());
+                WritePrivateProfileStringW(L"audio", L"mute", L"0", ini.c_str());
+                WritePrivateProfileStringW(L"audio", L"latency", L"100", ini.c_str());
+            }
+            window->setAudio(volume, mute, audioLatency);
+        }
 #else
         if (frames == 0) frames = 300;
 #endif
+        std::unique_ptr<app::InputRecorder> recorder;
+        std::unique_ptr<app::InputReplay> replay;
+        if (!recordPath.empty()) recorder = std::make_unique<app::InputRecorder>(recordPath);
+        if (!replayPath.empty()) {
+            replay = std::make_unique<app::InputReplay>(replayPath);
+            std::printf("replay  %s (input until frame %llu)\n", replayPath.c_str(), static_cast<unsigned long long>(replay->lastFrame()));
+        }
+        std::unique_ptr<app::Cheats> cheats;
+        if (!cheatsPath.empty()) {
+            cheats = std::make_unique<app::Cheats>(cheatsPath, cheatNames);
+            for (const auto& c : cheats->active()) std::printf("cheat   %s (%zu codes)\n", c.name.c_str(), c.codes.size());
+            for (const auto& s : cheats->skipped) std::printf("cheat   code type not supported, skipped: %s\n", s.c_str());
+            if (cheats->active().empty()) std::printf("cheat   no cheats loaded from %s\n", cheatsPath.c_str());
+        }
         auto insertDisc = [&](int number) {
             std::string path = discPathFor(discPath, number);
             try {
                 auto next = std::make_shared<fe::DiscImage>(path);
                 m.cd->insert(m, next);
+                if (recorder) recorder->disc(m.frame, number);
 #if FE_HAVE_WINDOW
                 if (videoMode == app::VideoMode::AiSeedVR2) seedvr2Check(*next);
 #endif
@@ -402,6 +580,71 @@ int main(int argc, char** argv) {
             swapFrame = static_cast<fe::u64>(std::atoll(swapScript.substr(0, colon).c_str()));
             swapDisc = std::atoi(swapScript.substr(colon + 1).c_str());
         }
+        // ---- save states ----
+        // A state is written at the machine's next safe point (within a
+        // fraction of a frame); loading replaces the machine and restarts it.
+        int slot = 1;
+        std::string pendingSave;
+        auto slotPath = [&](int n) { return statesDir + "/slot" + std::to_string(n) + ".state"; };
+        auto say = [&](const std::string& text) {
+            std::printf("state   %s\n", text.c_str());
+#if FE_HAVE_WINDOW
+            if (window) window->status(text);
+#endif
+        };
+        m.onSafePoint = [&]() {
+            const std::string path = pendingSave;
+            pendingSave.clear();
+            if (writeStateFile(path, exeCrc, m.cd->disc->volumeId(), m.saveState())) say("saved " + path + " at frame " + std::to_string(m.frame));
+            else say("could not write " + path);
+        };
+        auto requestSave = [&](const std::string& path) {
+            pendingSave = path;
+            m.safePointWanted = true;
+        };
+        // Reads a state and puts the disc it was saved with in the drive.
+        // Returns the machine state, or empty (after saying why) when it cannot be used.
+        auto readState = [&](const std::string& path) -> std::vector<fe::u8> {
+            std::string volume;
+            std::vector<fe::u8> payload;
+            if (std::string err = readStateFile(path, exeCrc, volume, payload); !err.empty()) {
+                say(err);
+                return {};
+            }
+            if (volume != m.cd->disc->volumeId()) {
+                const int number = discNumber(volume);
+                const std::string other = number ? discPathFor(discPath, number) : std::string();
+                try {
+                    if (other.empty()) throw std::runtime_error("unknown disc " + volume);
+                    m.cd->disc = std::make_shared<fe::DiscImage>(other);
+                } catch (const std::exception& e) {
+                    say(path + " needs disc " + std::to_string(number) + ": " + e.what());
+                    return {};
+                }
+            }
+            return payload;
+        };
+        if (!loadStatePath.empty()) {
+            std::vector<fe::u8> payload = readState(loadStatePath);
+            if (payload.empty()) throw std::runtime_error("cannot start from " + loadStatePath);
+            m.loadState(payload);
+            say("started from " + loadStatePath + " (frame " + std::to_string(m.frame) + ")");
+        }
+        // --save-state-at FRAME:FILE (headless testing)
+        fe::u64 saveAtFrame = ~0ull;
+        std::string saveAtPath;
+        if (size_t colon = saveStateAt.find(':'); colon != std::string::npos) {
+            saveAtFrame = static_cast<fe::u64>(std::atoll(saveStateAt.substr(0, colon).c_str()));
+            saveAtPath = saveStateAt.substr(colon + 1);
+        }
+        // --load-state-at FRAME:FILE: loads a state while running, once (headless testing of F7)
+        fe::u64 loadAtFrame = ~0ull;
+        std::string loadAtPath;
+        if (size_t colon = loadStateAt.find(':'); colon != std::string::npos) {
+            loadAtFrame = static_cast<fe::u64>(std::atoll(loadStateAt.substr(0, colon).c_str()));
+            loadAtPath = loadStateAt.substr(colon + 1);
+        }
+
         fe::u64 lastActivity = ~0ull;
         app::ModernControls modernControls;
         m.onVblank = [&]() {
@@ -409,6 +652,17 @@ int main(int argc, char** argv) {
             float stickX = 0, stickY = 0;
             fe::u16 held = 0;
             if (m.frame == swapFrame) insertDisc(swapDisc);
+            if (m.frame == saveAtFrame) requestSave(saveAtPath);
+            if (m.frame == loadAtFrame) {
+                loadAtFrame = ~0ull;
+                std::vector<fe::u8> payload = readState(loadAtPath);
+                if (!payload.empty()) {
+                    say("loaded " + loadAtPath + " at frame " + std::to_string(m.frame));
+                    throw fe::Restart{std::move(payload)};
+                }
+            }
+            if (replay)
+                if (int disc = replay->disc(m.frame)) insertDisc(disc);
             for (fe::s16 v : m.audio) {
                 audioEnergy += static_cast<double>(v) * v;
                 audioPeak = std::max(audioPeak, std::abs(static_cast<int>(v)));
@@ -436,14 +690,34 @@ int main(int argc, char** argv) {
                 if (!open) throw fe::Stop{"window closed"};
                 held |= window->buttons();
                 analog = window->stick(stickX, stickY);
-                if (int disc = window->discRequest()) insertDisc(disc);
+                if (int disc = window->discRequest(); disc && !replay) insertDisc(disc);
                 window->audio(m.audio);
+                for (app::Hotkey key : window->hotkeys()) {
+                    if (key == app::Hotkey::NextSlot || key == app::Hotkey::PrevSlot) {
+                        slot = (slot + (key == app::Hotkey::NextSlot ? 1 : 7)) % 9 + 1;
+                        std::error_code ec;
+                        say("slot " + std::to_string(slot) + (std::filesystem::exists(slotPath(slot), ec) ? "" : " (empty)"));
+                    } else if (key == app::Hotkey::SaveState) {
+                        requestSave(slotPath(slot));
+                    } else {
+                        std::vector<fe::u8> payload = readState(slotPath(slot));
+                        if (!payload.empty()) {
+                            m.audio.clear();
+                            say("loaded slot " + std::to_string(slot));
+                            throw fe::Restart{std::move(payload)};
+                        }
+                    }
+                }
             }
 #endif
             m.audio.clear();
             for (const auto& p : presses)
                 if (m.frame >= p.frame && m.frame < p.frame + p.length) held |= p.mask;
             if (modern) held = modernControls.apply(m, held, analog, stickX, stickY);
+            // --replay: the recorded pad replaces everything above; --record: what the game gets
+            if (replay) held = replay->buttons(m.frame);
+            if (recorder) recorder->buttons(m.frame, held);
+            if (cheats) cheats->apply(m.ram.get());
             // The game's own cheat switches (the published GameShark codes
             // 80077810 0001 and 0002): bit 0 infinite ammo, bit 1 infinite health.
             if (infiniteHealth || infiniteAmmo) {

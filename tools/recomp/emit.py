@@ -206,9 +206,9 @@ def emit_function(func: Function, known: set[int]) -> list[str]:
             # executed as part of the preceding branch; only reachable on its
             # own when something branches straight to it
             if a in leaders:
-                out.append(f"    if (0) {{ L_{a:08X}: FE_BLOCK({block_len(a)}); {simple(ins)} }}")
+                out.append(f"    if (0) {{ L_{a:08X}: FE_BLOCK({block_len(a)}, {_u(a)}); {simple(ins)} }}")
             continue
-        prefix = f"    L_{a:08X}: FE_BLOCK({block_len(a)}); " if a in leaders else "    "
+        prefix = f"    L_{a:08X}: FE_BLOCK({block_len(a)}, {_u(a)}); " if a in leaders else "    "
         if not ins.has_delay_slot:
             out.append(prefix + simple(ins))
             continue

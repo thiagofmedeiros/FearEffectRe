@@ -53,9 +53,15 @@ void Cdrom::tick(Machine& m) {
     if (!reading || nextSector > m.clock) return;
 
     u8 raw[2352];
+    const bool ok = disc->readRawSector(lba, raw);
     u64 interval = kCpuHz / ((mode & 0x80) ? 150 : 75);
+    // Faster loading: plain data arrives `speed` times as fast. Streams the
+    // game plays as they arrive keep the console's pace: XA audio and movie
+    // (STR) sectors, which start with the 0160h/8001h header.
+    const bool stream = (mode & 0x40) || (raw[24] == 0x60 && raw[25] == 0x01 && raw[26] == 0x01 && raw[27] == 0x80);
+    if (speed > 1 && ok && !stream) interval /= static_cast<u64>(speed);
     nextSector = std::max(nextSector + interval, m.clock + interval / 4);
-    if (!disc->readRawSector(lba, raw)) {
+    if (!ok) {
         reading = false;
         stat &= ~0x20;
         deliver(m, 5, {static_cast<u8>(stat | 0x04), 0x04});
@@ -141,7 +147,7 @@ void Cdrom::command(Machine& m, u8 cmd) {
             }
             reading = true;
             stat = 0x22;
-            nextSector = now + kAckDelay + kSeekDelay;
+            nextSector = now + kAckDelay + kSeekDelay / static_cast<u64>(speed);
             ack({stat});
             break;
         case 0x07: stat |= 0x02; ack({stat}); complete(kCompleteDelay, {stat}); break;  // MotorOn

@@ -26,6 +26,7 @@ struct Cdrom;
 struct Gpu;
 struct Mdec;
 struct Spu;
+class StateIO;
 
 struct Cpu {
     u32 r[32]{};
@@ -82,6 +83,11 @@ struct ExceptionReturn {};
 struct Stop {
     std::string reason;
 };
+// Thrown to load a save state: unwinds every host frame of guest code, then
+// Machine::run() restores `data` and carries on from the saved pc.
+struct Restart {
+    std::vector<u8> data;
+};
 
 struct Event {
     u32 cls{}, spec{}, mode{}, func{};
@@ -120,7 +126,7 @@ struct Machine {
     GuestFn lookup(u32 pc) const;
     const JumpMeta* findJumpMeta(u32 pc) const;
     void loadExe(const std::vector<u8>& exe);
-    void run();                                   // runs from cpu.pc until Stop
+    void run();                                   // runs from cpu.pc until Stop (loads states on Restart)
     void call(Cpu& c, u32 target);                // guest call, returns when callee returns
     void jump(Cpu& c, u32 target);                // unresolved jr: BIOS vector or tail call
     void resume(Cpu& c, u32 untilPc);             // callee came back at c.pc instead of untilPc
@@ -138,6 +144,17 @@ struct Machine {
     bool inException = false;
 
     std::function<void()> onVblank;  // called once per frame, before the interrupt is delivered
+    // Save states. A state can only be taken where every guest register is in
+    // `cpu` and no host frame holds guest state: at the start of a time slice,
+    // outside interrupt handlers and event callbacks. Set `safePointWanted`
+    // and `onSafePoint` is called at the next such point (cpu.pc is where the
+    // game resumes); it can call saveState().
+    bool safePointWanted = false;
+    std::function<void()> onSafePoint;
+    int hostFrames = 0;  // guest code running on behalf of the BIOS (event callbacks)
+    std::vector<u8> saveState();
+    void loadState(const std::vector<u8>& data);
+    void state(StateIO& io);
     // Rotation matrices the game loaded into the GTE (row-major, 4096 = 1.0),
     // collected only while `recordRotations` is set; the reader clears the
     // list. The modern controls look for the camera among them.

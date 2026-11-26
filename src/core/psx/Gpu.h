@@ -48,6 +48,7 @@ struct Gpu {
     u32 displayMode = 0;
     u32 dmaDirection = 0;
 
+    void state(StateIO& io);
 private:
     struct Vertex {
         int x, y;

@@ -21,6 +21,7 @@ struct Mdec {
     bool lazyInput = false;  // read DMA input from RAM when output is collected instead of at transfer time
     std::vector<std::string> trace;  // first few commands and transfers, for the boot report
 
+    void state(StateIO& io, Machine& m);
 private:
     void decode(size_t wantBytes);
     u16 code(size_t i) const;

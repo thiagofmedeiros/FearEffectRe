@@ -37,6 +37,9 @@ struct LaunchSettings {
     bool infiniteHealth = false, infiniteAmmo = false;  // the game's own cheats
 };
 
+// FearEffectRe.ini next to the program.
+std::wstring settingsPath();
+
 // Returns false when the dialog was closed without pressing Play.
 bool runLauncher(LaunchSettings& settings);
 

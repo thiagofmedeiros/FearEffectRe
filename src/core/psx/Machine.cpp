@@ -117,7 +117,19 @@ const JumpMeta* Machine::findJumpMeta(u32 pc) const {
     return it != jumpMeta.end() && it->pc == pc ? &*it : nullptr;
 }
 
-void Machine::run() { interpret(cpu, 0xFFFFFFFF, 0); }
+void Machine::run() {
+    for (;;) {
+        try {
+            interpret(cpu, 0xFFFFFFFF, 0);
+            return;
+        } catch (Restart& r) {
+            // every host frame of guest code is gone: the restored game
+            // carries on from its saved pc in the interpreter, which hands
+            // over to recompiled code at the next function it calls
+            loadState(r.data);
+        }
+    }
+}
 
 // Every path leaves c.pc at the address the guest continues at.
 void Machine::call(Cpu& c, u32 target) {
@@ -156,6 +168,10 @@ void Machine::onSlice(Cpu& c) {
     s64 elapsed = sliceLen - c.cycles;
     if (elapsed > 0) clock += static_cast<u64>(elapsed);
     if (clock >= cycleLimit) throw Stop{"cycle limit"};
+    if (safePointWanted && !inException && hostFrames == 0 && &c == &cpu && onSafePoint) {
+        safePointWanted = false;
+        onSafePoint();
+    }
     while (clock >= nextVblank) {
         nextVblank += kCyclesPerFrame;
         ++frame;

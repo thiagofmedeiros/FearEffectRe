@@ -22,6 +22,7 @@ add_library(fe_core STATIC
     src/core/psx/Mdec.cpp
     src/core/psx/Spu.cpp
     src/core/psx/Hardware.cpp
+    src/core/psx/State.cpp
 )
 target_include_directories(fe_core PUBLIC src/core)
 if(MSVC)

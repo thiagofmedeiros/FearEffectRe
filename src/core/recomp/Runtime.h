@@ -5,9 +5,14 @@
 
 // Charges the cycles of a straight-line run of instructions and lets the
 // machine deliver interrupts and scheduled events when the slice is used up.
-#define FE_BLOCK(n)                                   \
-    do {                                              \
-        if ((c.cycles -= (n) * fe::kCyclesPerInstruction) <= 0) c.m->onSlice(c);  \
+// `addr` is where the block starts: c.pc is set to it before the machine takes
+// over, so every guest register is in `c` and a save state can resume there.
+#define FE_BLOCK(n, addr)                                                     \
+    do {                                                                      \
+        if ((c.cycles -= (n) * fe::kCyclesPerInstruction) <= 0) [[unlikely]] { \
+            c.pc = (addr);                                                    \
+            c.m->onSlice(c);                                                  \
+        }                                                                     \
     } while (0)
 
 // Direct call to a recompiled function. The hook lets differential tests

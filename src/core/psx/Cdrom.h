@@ -25,8 +25,10 @@ struct Cdrom {
 
     std::shared_ptr<DiscImage> disc;
     u64 sectorsRead = 0, xaSectors = 0, commands = 0;
-    int traceLeft = 0;  // register accesses still to be written to the machine log
+    int traceLeft = 0;
+    int speed = 1;      // data reads and seeks this many times as fast (streams excepted)  // register accesses still to be written to the machine log
 
+    void state(StateIO& io);
 private:
     struct Pending {
         u64 time;
