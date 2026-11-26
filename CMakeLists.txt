@@ -82,6 +82,11 @@ if(WIN32)
         add_custom_command(TARGET FearEffectRe POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory "${FE_AI_DIR}" "$<TARGET_FILE_DIR:FearEffectRe>/ai")
     endif()
+    # driver for the SeedVR2 cache builder (SeedVR2 itself goes in ai/seedvr2, see tools/ai/README.md)
+    add_custom_command(TARGET FearEffectRe POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:FearEffectRe>/ai"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/tools/ai/seedvr2_chunk.py"
+                "$<TARGET_FILE_DIR:FearEffectRe>/ai/seedvr2_chunk.py")
     target_compile_definitions(FearEffectRe PRIVATE FE_HAVE_WINDOW=1)
 endif()
 target_link_libraries(FearEffectRe PRIVATE fe_core ${FE_RECOMP_LIB})

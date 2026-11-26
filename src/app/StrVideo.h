@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "disc/DiscImage.h"
@@ -20,7 +21,8 @@ struct StrFrame {
 // Calls `frame` for every complete video frame in the disc's XA files, in disc
 // order. `progress(done, total)` is called now and then with sector counts.
 // Returns the number of frames that could not be decoded.
+// `only`, when not empty, limits it to the file with that path (e.g. "BOOT.SID").
 int forEachStrFrame(fe::DiscImage& disc, const std::function<void(const StrFrame&)>& frame,
-                    const std::function<void(std::uint64_t, std::uint64_t)>& progress);
+                    const std::function<void(std::uint64_t, std::uint64_t)>& progress, const std::string& only = {});
 
 }  // namespace app

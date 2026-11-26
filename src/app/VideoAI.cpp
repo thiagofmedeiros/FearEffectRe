@@ -16,6 +16,8 @@
 #include <deque>
 #include <mutex>
 #include <fstream>
+#include <functional>
+#include <set>
 #include <iterator>
 #include <unordered_map>
 #include <unordered_set>
@@ -31,6 +33,7 @@ const char* videoModeId(VideoMode m) {
     switch (m) {
         case VideoMode::AiFast: return "fast";
         case VideoMode::AiBest: return "best";
+        case VideoMode::AiSeedVR2: return "seedvr2";
         default: return "original";
     }
 }
@@ -39,6 +42,7 @@ bool parseVideoMode(const std::string& id, VideoMode& m) {
     if (id == "original" || id == "off") m = VideoMode::Original;
     else if (id == "fast") m = VideoMode::AiFast;
     else if (id == "best") m = VideoMode::AiBest;
+    else if (id == "seedvr2") m = VideoMode::AiSeedVR2;
     else return false;
     return true;
 }
@@ -298,10 +302,10 @@ uint64_t pictureHash(const fe::u8* rgb, int w, int h) {
 // (the program was stopped while writing) is dropped.
 class Pack {
 public:
-    bool open(const fs::path& dir, std::string& error) {
+    bool open(const fs::path& dir, std::string& error, const wchar_t* name = L"hdcache.pack") {
         std::error_code ec;
         fs::create_directories(dir, ec);
-        path_ = dir / L"hdcache.pack";
+        path_ = dir / name;
         file_ = _wfopen(path_.c_str(), L"a+b");
         if (!file_) {
             error = "cannot open " + path_.string();
@@ -342,6 +346,10 @@ public:
     }
 
     size_t size() const { return index_.size(); }
+    void forEachHash(const std::function<void(uint64_t)>& f) {
+        std::lock_guard<std::mutex> lock(m_);
+        for (const auto& e : index_) f(e.first);
+    }
     bool has(uint64_t hash) {
         std::lock_guard<std::mutex> lock(m_);
         return index_.count(hash) != 0;
@@ -429,12 +437,18 @@ class BestUpscaler : public fe::VideoUpscaler {
 public:
     Model model;
     Pack pack;
-    unsigned hits = 0, misses = 0;
+    Pack seedvr;          // SeedVR2 pictures, looked up first when opened
+    bool useSeedvr = false;
+    unsigned hits = 0, misses = 0, seedvrHits = 0;
 
     bool upscale(const fe::u8* rgb, int w, int h, std::vector<fe::u8>& out) override {
         const uint64_t hash = pictureHash(rgb, w, h);
         const size_t want = static_cast<size_t>(w) * K * h * K * 3;
         bool raw = false;
+        if (useSeedvr && seedvr.read(hash, out, raw) && raw && out.size() == want) {
+            ++seedvrHits;
+            return true;
+        }
         if (pack.read(hash, out, raw)) {
             if (raw && out.size() == want) {
                 ++hits;
@@ -458,6 +472,7 @@ public:
     }
     ~BestUpscaler() override {
         model.stats("best");
+        if (useSeedvr) std::printf("video   SeedVR2 cache: %u pictures found\n", seedvrHits);
         if (hits + misses) std::printf("video   HD cache: %u pictures found, %u enlarged and added\n", hits, misses);
     }
 };
@@ -480,7 +495,14 @@ std::shared_ptr<fe::VideoUpscaler> createAiUpscaler(VideoMode mode, const fs::pa
         if (!u->model.load(aiDir, aiDir / L"fast_x4.onnx", error)) return nullptr;
         return u;
     }
-    return createBest(aiDir, cacheDir, error);
+    auto u = createBest(aiDir, cacheDir, error);
+    if (u && mode == VideoMode::AiSeedVR2) {
+        std::string e;
+        u->useSeedvr = u->seedvr.open(cacheDir, e, L"seedvr2.pack");
+        if (u->useSeedvr && u->seedvr.size() == 0)
+            std::printf("video   the SeedVR2 cache is empty: build it from the launcher (Build HD cache)\n");
+    }
+    return u;
 }
 
 namespace {
@@ -622,6 +644,128 @@ int buildHdCache(const std::vector<std::string>& discs, const fs::path& aiDir, c
     std::printf("hdcache done: %u frames read, %u different pictures, %u added, %u were there already, %d frames not decoded\n",
                 frames, static_cast<unsigned>(seen.size()), added.load(), present, failed);
     return 0;
+}
+
+int buildSeedVR2Cache(const std::vector<std::string>& discs, const fs::path& aiDir, const fs::path& cacheDir) {
+    const fs::path seedvr = aiDir / L"seedvr2";
+    const fs::path python = seedvr / L"venv" / L"Scripts" / L"python.exe";
+    const fs::path script = aiDir / L"seedvr2_chunk.py";
+    std::error_code ec;
+    if (!fs::exists(python, ec) || !fs::exists(seedvr / L"repo" / L"inference_cli.py", ec) || !fs::exists(script, ec)) {
+        std::printf("seedvr2 not installed: needs %s, %s and %s (see tools/ai/README.md)\n", python.string().c_str(),
+                    (seedvr / L"repo").string().c_str(), script.string().c_str());
+        return 1;
+    }
+    std::set<uint64_t> done;  // pictures already in the SeedVR2 cache
+    {
+        Pack pack;
+        std::string error;
+        if (!pack.open(cacheDir, error, L"seedvr2.pack")) {
+            std::printf("seedvr2 cannot start: %s\n", error.c_str());
+            return 1;
+        }
+        pack.forEachHash([&](uint64_t h) { done.insert(h); });
+    }
+    const fs::path work = cacheDir / L"seedvr2-work";
+    const fs::path packPath = cacheDir / L"seedvr2.pack";
+
+    // Frames are gathered in disc order and handed over in chunks of up to
+    // kChunk new pictures; a chunk also ends where a file ends, so a chunk
+    // is one run of a movie or background as the game plays it.
+    constexpr size_t kChunk = 300;
+    std::vector<std::vector<fe::u8>> frames;
+    std::vector<uint64_t> hashes;
+    int width = 0, height = 0;
+    unsigned chunks = 0, added = 0;
+    bool failed = false;
+    const auto start = std::chrono::steady_clock::now();
+    auto flush = [&]() {
+        if (frames.empty() || failed) return;
+        fs::remove_all(work, ec);
+        fs::create_directories(work, ec);
+        std::ofstream list(work / L"hashes.txt");
+        for (size_t i = 0; i < frames.size(); ++i) {
+            char name[32];
+            std::snprintf(name, sizeof name, "%05zu.ppm", i);
+            std::ofstream out(work / name, std::ios::binary);
+            out << "P6\n" << width << " " << height << "\n255\n";
+            out.write(reinterpret_cast<const char*>(frames[i].data()), static_cast<std::streamsize>(frames[i].size()));
+            char line[24];
+            std::snprintf(line, sizeof line, "%016llx\n", static_cast<unsigned long long>(hashes[i]));
+            list << line;
+        }
+        list.close();
+        std::wstring cmd = L"\"" + python.wstring() + L"\" \"" + script.wstring() + L"\" \"" + work.wstring() + L"\" \"" +
+                           packPath.wstring() + L"\" \"" + seedvr.wstring() + L"\"";
+        STARTUPINFOW si{};
+        si.cb = sizeof si;
+        PROCESS_INFORMATION pi{};
+        DWORD code = 1;
+        if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+            WaitForSingleObject(pi.hProcess, INFINITE);
+            GetExitCodeProcess(pi.hProcess, &code);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+        }
+        if (code != 0) {
+            std::printf("seedvr2 a chunk failed; its frames are kept in %s\n", work.string().c_str());
+            failed = true;
+            return;
+        }
+        for (uint64_t h : hashes) done.insert(h);
+        added += static_cast<unsigned>(frames.size());
+        ++chunks;
+        const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        std::printf("seedvr2 %u pictures added (%.2f s each)\n", added, s / added);
+        std::fflush(stdout);
+        frames.clear();
+        hashes.clear();
+        fs::remove_all(work, ec);
+    };
+
+    for (const std::string& path : discs) {
+        if (failed) break;
+        std::unique_ptr<fe::DiscImage> disc;
+        try {
+            disc = std::make_unique<fe::DiscImage>(path);
+        } catch (const std::exception& e) {
+            std::printf("seedvr2 skipping %s: %s\n", path.c_str(), e.what());
+            continue;
+        }
+        for (const auto& file : disc->files()) {
+            if (!file.form2 || file.directory || failed) continue;
+            std::printf("seedvr2 %s %s\n", path.c_str(), file.path.c_str());
+            std::fflush(stdout);
+            std::uint64_t sectorsDone = 0, sectorsTotal = 1;
+            std::set<uint64_t> queued;
+            forEachStrFrame(
+                *disc,
+                [&](const StrFrame& f) {
+                    if (failed) return;
+                    const uint64_t h = pictureHash(f.rgb.data(), f.width, f.height);
+                    if (done.count(h) || queued.count(h)) return;
+                    if (!frames.empty() && (f.width != width || f.height != height)) flush();
+                    width = f.width;
+                    height = f.height;
+                    queued.insert(h);
+                    frames.push_back(f.rgb);
+                    hashes.push_back(h);
+                    if (frames.size() >= kChunk) {
+                        std::printf("seedvr2 %5.1f%% of %s\n", 100.0 * sectorsDone / sectorsTotal, file.path.c_str());
+                        flush();
+                    }
+                },
+                [&](std::uint64_t d, std::uint64_t t) {
+                    sectorsDone = d;
+                    sectorsTotal = t ? t : 1;
+                },
+                file.path);
+            flush();
+        }
+    }
+    std::printf("seedvr2 %s: %u pictures added in %u chunks, %zu in the SeedVR2 cache\n", failed ? "stopped" : "done", added,
+                chunks, done.size());
+    return failed ? 1 : 0;
 }
 
 }  // namespace app

@@ -31,7 +31,7 @@ struct LaunchSettings {
     int resolution = 1;  // index into kResolutions
     bool fullscreen = false;
     int display = 0;     // index into listDisplays()
-    int video = 1;       // movies and backgrounds: 0 original, 1 AI fast, 2 AI best (cached)
+    int video = 1;       // movies and backgrounds: 0 original, 1 AI fast, 2 AI best (cached), 3 SeedVR2 (cached)
     bool modern = false; // screen-relative movement instead of tank controls
     bool widescreen = false;  // gameplay and movies without the black bands, filling the width
     bool infiniteHealth = false, infiniteAmmo = false;  // the game's own cheats
