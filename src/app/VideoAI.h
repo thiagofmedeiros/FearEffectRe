@@ -17,6 +17,7 @@ enum class VideoMode {
     Original,  // no enlargement: the 320x160 pictures as they are, in big blocks
     AiFast,    // small video model, run live
     AiBest,    // large model; results kept in a cache on disk so later runs are full speed
+    AiSeedVR2, // SeedVR2 video model, from its own cache built beforehand (x4plus where it has no picture)
 };
 
 const char* videoModeId(VideoMode m);  // "original", "fast", "best"
@@ -31,5 +32,10 @@ std::shared_ptr<fe::VideoUpscaler> createAiUpscaler(VideoMode mode, const std::f
 // there (so it can be stopped and run again). Returns an exit code.
 int buildHdCache(const std::vector<std::string>& discs, const std::filesystem::path& aiDir,
                  const std::filesystem::path& cacheDir);
+
+// The same for SeedVR2: the frames go through seedvr2_chunk.py (in the ai
+// folder, using ai/seedvr2) in chunks, in disc order, into hdcache/seedvr2.pack.
+int buildSeedVR2Cache(const std::vector<std::string>& discs, const std::filesystem::path& aiDir,
+                      const std::filesystem::path& cacheDir);
 
 }  // namespace app

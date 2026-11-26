@@ -129,16 +129,24 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                     MB_OK | MB_ICONINFORMATION);
                         return 0;
                     }
-                    if (MessageBoxW(hwnd,
-                                    L"This decodes every movie and background frame on all four discs found next to "
-                                    L"disc 1 and enlarges each with the best AI model into the file hdcache/hdcache.pack.\n\n"
-                                    L"It takes several hours on a fast graphics card and needs about 300 GB of disk "
-                                    L"space. It can be stopped by closing its window and resumed later.\n\nStart now?",
-                                    L"Build HD cache", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK)
+                    // the cache for the Video choice: SeedVR2 has its own
+                    const bool seedvr = SendMessageW(st->video, CB_GETCURSEL, 0, 0) == 3;
+                    const wchar_t* text =
+                        seedvr ? L"This decodes every movie and background frame on all four discs found next to "
+                                 L"disc 1 and enlarges them with SeedVR2, as video, into the file hdcache/seedvr2.pack.\n\n"
+                                 L"It takes about two days on an RTX 3090 class graphics card and about 300 GB of disk "
+                                 L"space. It can be stopped by closing its window and resumed later.\n\nStart now?"
+                               : L"This decodes every movie and background frame on all four discs found next to "
+                                 L"disc 1 and enlarges each with the best AI model into the file hdcache/hdcache.pack.\n\n"
+                                 L"It takes several hours on a fast graphics card and needs about 300 GB of disk "
+                                 L"space. It can be stopped by closing its window and resumed later.\n\nStart now?";
+                    if (MessageBoxW(hwnd, text, seedvr ? L"Build SeedVR2 HD cache" : L"Build HD cache",
+                                    MB_OKCANCEL | MB_ICONINFORMATION) != IDOK)
                         return 0;
                     wchar_t exe[MAX_PATH];
                     GetModuleFileNameW(nullptr, exe, MAX_PATH);
-                    std::wstring cmd = L"\"" + std::wstring(exe) + L"\" \"" + disc + L"\" --build-hd-cache";
+                    std::wstring cmd = L"\"" + std::wstring(exe) + L"\" \"" + disc + L"\" " +
+                                       (seedvr ? L"--build-seedvr2-cache" : L"--build-hd-cache");
                     STARTUPINFOW si{};
                     si.cb = sizeof si;
                     PROCESS_INFORMATION pi{};
@@ -175,7 +183,7 @@ bool runLauncher(LaunchSettings& settings) {
     int disp = static_cast<int>(GetPrivateProfileIntW(L"launcher", L"display", settings.display, ini.c_str()));
     if (disp < 0 || disp >= static_cast<int>(displays.size())) disp = 0;
     int vid = static_cast<int>(GetPrivateProfileIntW(L"launcher", L"video", settings.video, ini.c_str()));
-    if (vid < 0 || vid > 2) vid = 1;
+    if (vid < 0 || vid > 3) vid = 1;
     bool modern = GetPrivateProfileIntW(L"launcher", L"modern", settings.modern ? 1 : 0, ini.c_str()) != 0;
     bool wide = GetPrivateProfileIntW(L"launcher", L"widescreen", settings.widescreen ? 1 : 0, ini.c_str()) != 0;
     bool health = GetPrivateProfileIntW(L"cheats", L"health", settings.infiniteHealth ? 1 : 0, ini.c_str()) != 0;
@@ -231,7 +239,8 @@ bool runLauncher(LaunchSettings& settings) {
     st.video = make(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, 100, 108 + extra, 404, 200, kIdVideo);
     for (const wchar_t* label : {L"Original (movies and backgrounds as they are)",
                                  L"AI upscale, fast (live on the graphics card)",
-                                 L"AI upscale, best (cached; slow the first time)"})
+                                 L"AI upscale, best (cached; slow the first time)",
+                                 L"AI upscale, SeedVR2 (steadiest movies; build its HD cache first)"})
         SendMessageW(st.video, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
     SendMessageW(st.video, CB_SETCURSEL, static_cast<WPARAM>(vid), 0);
     st.modern = make(L"BUTTON", L"Modern movement (walk where the stick points on screen)",
@@ -282,7 +291,7 @@ bool runLauncher(LaunchSettings& settings) {
         WritePrivateProfileStringW(L"launcher", L"fullscreen", settings.fullscreen ? L"1" : L"0", ini.c_str());
         WritePrivateProfileStringW(L"launcher", L"display", std::to_wstring(settings.display).c_str(), ini.c_str());
         settings.video = static_cast<int>(SendMessageW(st.video, CB_GETCURSEL, 0, 0));
-        if (settings.video < 0 || settings.video > 2) settings.video = 1;
+        if (settings.video < 0 || settings.video > 3) settings.video = 1;
         WritePrivateProfileStringW(L"launcher", L"video", std::to_wstring(settings.video).c_str(), ini.c_str());
         settings.modern = SendMessageW(st.modern, BM_GETCHECK, 0, 0) == BST_CHECKED;
         WritePrivateProfileStringW(L"launcher", L"modern", settings.modern ? L"1" : L"0", ini.c_str());

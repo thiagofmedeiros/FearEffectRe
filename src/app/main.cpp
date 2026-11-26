@@ -21,6 +21,7 @@
 #if FE_HAVE_WINDOW
 #include "Launcher.h"
 #include "VideoAI.h"
+#include "StrVideo.h"
 #include "Window.h"
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -118,11 +119,12 @@ int usage() {
                  "--resolution original|720p|1080p|1440p|4k and --fullscreen set the output size,\n"
                  "--display N picks the monitor (1 = primary),\n"
                  "--scale N sets the internal resolution multiplier (default: enough for the output height),\n"
-                 "--video original|fast|best: AI upscaling of movies and backgrounds (best keeps an HD cache),\n"
+                 "--video original|fast|best|seedvr2: AI upscaling of movies and backgrounds (best keeps an HD cache),\n"
                  "--widescreen: gameplay and movies (a letterboxed 2:1 picture) fill the width, without black bands,\n"
                  "--infinite-health and --infinite-ammo turn on the game's own cheats,\n"
                  "--modern: the stick or D-pad moves the character in that direction on screen (no tank controls),\n"
-                 "--build-hd-cache enlarges every movie and background frame of all discs into the HD cache (hours).\n"
+                 "--build-hd-cache enlarges every movie and background frame of all discs into the HD cache (hours),\n"
+                 "--build-seedvr2-cache does the same with SeedVR2 for --video seedvr2 (days).\n"
                  "Run without arguments for the launcher.\n");
     return 2;
 }
@@ -162,7 +164,8 @@ int main(int argc, char** argv) {
     if (argc < 2) return usage();
 #endif
     if (!viaLauncher) discPath = argv[1];
-    bool buildHdCache = false;
+    bool buildHdCache = false, buildSeedvr2 = false;
+    std::string exportVideo, exportDir;  // --export-video FILE DIR: a movie's frames as PPM pictures
     unsigned frames = 0;  // 0 = play in a window until it is closed
     size_t maxLog = 80;
     bool interpreterOnly = false, logBios = false;
@@ -209,6 +212,11 @@ int main(int argc, char** argv) {
         else if (a == "--dump-vram" && i + 1 < argc) vramPath = argv[++i];
         else if (a == "--log-cd" && i + 1 < argc) logCd = std::atoi(argv[++i]);
         else if (a == "--build-hd-cache") buildHdCache = true;
+        else if (a == "--build-seedvr2-cache") buildSeedvr2 = true;
+        else if (a == "--export-video" && i + 2 < argc) {
+            exportVideo = argv[++i];
+            exportDir = argv[++i];
+        }
         else if (a == "--modern") modern = true;
         else if (a == "--widescreen") widescreen = true;
         else if (a == "--infinite-health") infiniteHealth = true;
@@ -216,7 +224,26 @@ int main(int argc, char** argv) {
         else return usage();
     }
 #if FE_HAVE_WINDOW
-    if (buildHdCache) {
+    if (!exportVideo.empty()) {
+        fe::DiscImage disc(discPath);
+        std::filesystem::create_directories(exportDir);
+        int n = 0;
+        int failed = app::forEachStrFrame(
+            disc,
+            [&](const app::StrFrame& f) {
+                char name[32];
+                std::snprintf(name, sizeof name, "/%05d.ppm", n++);
+                FILE* out = std::fopen((exportDir + name).c_str(), "wb");
+                if (!out) return;
+                std::fprintf(out, "P6\n%d %d\n255\n", f.width, f.height);
+                std::fwrite(f.rgb.data(), 1, f.rgb.size(), out);
+                std::fclose(out);
+            },
+            [](std::uint64_t, std::uint64_t) {}, exportVideo);
+        std::printf("export  %d frames of %s written to %s (%d not decoded)\n", n, exportVideo.c_str(), exportDir.c_str(), failed);
+        return 0;
+    }
+    if (buildHdCache || buildSeedvr2) {
         // every disc of the set that is found next to the given one
         std::vector<std::string> discs{discPath};
         for (int n = 2; n <= 4; ++n) {
@@ -227,6 +254,7 @@ int main(int argc, char** argv) {
         wchar_t exePath[MAX_PATH];
         GetModuleFileNameW(nullptr, exePath, MAX_PATH);
         std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
+        if (buildSeedvr2) return app::buildSeedVR2Cache(discs, exeDir / "ai", exeDir / "hdcache");
         return app::buildHdCache(discs, exeDir / "ai", exeDir / "hdcache");
     }
 #endif

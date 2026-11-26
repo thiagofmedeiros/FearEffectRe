@@ -54,12 +54,19 @@ The **Video** setting chooses how they are enlarged:
   **Build HD cache...** enlarges every movie and background frame of all four discs ahead of
   time: several hours and about 300 GB of disk; it can be stopped and resumed. Pictures
   missing from the cache are enlarged when first shown, which slows the game down.
+- **AI upscale, SeedVR2** (`seedvr2`): SeedVR2 3B, a video model: it enlarges frames in
+  groups, so movies are steadier and cleaner than with x4plus. It is far too slow to run
+  while playing, so it only shows pictures from its own cache, `hdcache/seedvr2.pack`
+  (x4plus fills in anything missing). With SeedVR2 selected, **Build HD cache...** (or
+  `--build-seedvr2-cache`) builds it: about two days on an RTX 3090 and about 300 GB.
+  It needs a CUDA graphics card and SeedVR2 installed in `ai/seedvr2`
+  (see [tools/ai/README.md](tools/ai/README.md)).
 
 The AI modes need a DirectX 12 graphics card.
 
-| Original | AI upscale, best |
-|---|---|
-| ![Intro movie, original](docs/screenshots/movie-original.jpg) | ![Intro movie, AI](docs/screenshots/movie-ai.jpg) |
+| Original | AI upscale, best | AI upscale, SeedVR2 |
+|---|---|---|
+| ![Intro movie, original](docs/screenshots/movie-original.jpg) | ![Intro movie, AI](docs/screenshots/movie-ai.jpg) | ![Intro movie, SeedVR2](docs/screenshots/movie-seedvr2.jpg) |
 
 ### Modern movement (optional)
 

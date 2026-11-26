@@ -25,3 +25,18 @@ Then configure with `-DFE_AI_DIR=<ai folder>` so the build copies it next to the
 
 `onnxruntime_c_api.h` in `third_party/onnxruntime` is from the same ONNX Runtime package
 (MIT licence). Real-ESRGAN is BSD-3-Clause.
+
+## SeedVR2 (optional, for the SeedVR2 video mode)
+
+The SeedVR2 cache builder runs `seedvr2_chunk.py` (copied into `ai` by the build) with
+the Python in `ai/seedvr2/venv`, on chunks of up to 300 frames. `ai/seedvr2` holds:
+
+| Folder | Contents |
+|---|---|
+| `venv` | Python 3.13 virtual environment with PyTorch for CUDA 12.6 (`pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126`) and the repo's `requirements.txt` |
+| `repo` | [ComfyUI-SeedVR2_VideoUpscaler](https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler) (its standalone `inference_cli.py`) |
+| `models/SEEDVR2` | `seedvr2_ema_3b_fp16.safetensors` and `ema_vae_fp16.safetensors` from [numz/SeedVR2_comfyUI](https://huggingface.co/numz/SeedVR2_comfyUI) |
+
+Settings used (they fit a 24 GB card): 3B fp16, batches of 21 frames with 4 frames of
+overlap, LAB colour correction, tiled VAE (512), DiT and VAE offloaded to the CPU between
+phases. On an RTX 3090 that is about 1.3 seconds per frame. SeedVR2 is Apache-2.0.

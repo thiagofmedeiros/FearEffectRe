@@ -194,10 +194,10 @@ bool decodeFrame(const std::vector<fe::u8>& data, int width, int height, StrFram
 }  // namespace
 
 int forEachStrFrame(fe::DiscImage& disc, const std::function<void(const StrFrame&)>& frame,
-                    const std::function<void(std::uint64_t, std::uint64_t)>& progress) {
+                    const std::function<void(std::uint64_t, std::uint64_t)>& progress, const std::string& only) {
     std::uint64_t total = 0, done = 0;
     for (const auto& f : disc.files())
-        if (f.form2 && !f.directory) total += (f.size + 2047) / 2048;
+        if (f.form2 && !f.directory && (only.empty() || f.path == only)) total += (f.size + 2047) / 2048;
     int failed = 0;
     std::vector<fe::u8> sector(2352);
     struct Pending {
@@ -209,7 +209,7 @@ int forEachStrFrame(fe::DiscImage& disc, const std::function<void(const StrFrame
     };
     StrFrame decoded;
     for (const auto& f : disc.files()) {
-        if (!f.form2 || f.directory) continue;
+        if (!f.form2 || f.directory || (!only.empty() && f.path != only)) continue;
         std::map<int, Pending> streams;  // by channel
         const fe::u32 count = (f.size + 2047) / 2048;
         for (fe::u32 i = 0; i < count; ++i, ++done) {
