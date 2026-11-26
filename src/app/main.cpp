@@ -112,18 +112,36 @@ std::string discPathFor(const std::string& path, int number) {
     return other;
 }
 
-// Checks every sector of a BIN/CUE image against the error detection code
-// (EDC) stored in it, which finds damaged or badly ripped images without a
-// list of known checksums. Returns the number of bad sectors, or -1 if it cannot tell.
+// The Redump dumps of the USA release (one data track each): size and CRC32
+// of the .bin, from the Redump PlayStation DAT.
+struct RedumpDisc {
+    const char* volumeId;
+    std::uint64_t size;
+    fe::u32 crc;
+};
+constexpr RedumpDisc kRedump[] = {
+    {"SLUS-00920", 487435536, 0x0044D5F7},
+    {"SLUS-01056", 505757616, 0xCB8E774F},
+    {"SLUS-01057", 451666320, 0xFD0F561B},
+    {"SLUS-01058", 509955936, 0x9853995E},
+};
+
+// Checks a disc image: its size and CRC32 against Redump, and every sector
+// against the error detection code (EDC) stored in it, which tells a damaged
+// image from a different but good dump. Returns the number of problems found.
 int discNumber(const std::string& volumeId);
 
 long verifyDisc(const std::string& path) {
-    static fe::u32 table[256];
+    static fe::u32 table[256], crcTable[256];
     if (!table[1])
         for (fe::u32 i = 0; i < 256; ++i) {
-            fe::u32 e = i;
-            for (int k = 0; k < 8; ++k) e = (e >> 1) ^ (e & 1 ? 0xD8018001u : 0);
+            fe::u32 e = i, c = i;
+            for (int k = 0; k < 8; ++k) {
+                e = (e >> 1) ^ (e & 1 ? 0xD8018001u : 0);
+                c = (c >> 1) ^ (c & 1 ? 0xEDB88320u : 0);
+            }
             table[i] = e;
+            crcTable[i] = c;
         }
     auto edc = [&](const fe::u8* p, size_t n) {
         fe::u32 e = 0;
@@ -133,18 +151,23 @@ long verifyDisc(const std::string& path) {
     fe::DiscImage disc(path);
     std::printf("disc    %s: %s, %u sectors\n", path.c_str(), disc.volumeId().c_str(), disc.sectorCount());
     if (!discNumber(disc.volumeId())) std::printf("        not a Fear Effect (USA) disc\n");
+    const RedumpDisc* known = nullptr;
+    for (const RedumpDisc& r : kRedump)
+        if (disc.volumeId() == r.volumeId) known = &r;
     if (!disc.raw()) {
-        std::printf("        2048-byte image: it has no error detection codes to check\n");
-        return -1;
+        std::printf("        2048-byte image (ISO): it cannot be compared with Redump or checked sector by sector\n");
+        return 0;
     }
     static const fe::u8 sync[12] = {0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0};
     fe::u8 raw[2352];
     long bad = 0;
+    fe::u32 crc = 0xFFFFFFFF;
     for (fe::u32 lba = 0; lba < disc.sectorCount(); ++lba) {
         if (!disc.readRawSector(lba, raw)) {
             ++bad;
             continue;
         }
+        for (fe::u8 v : raw) crc = (crc >> 8) ^ crcTable[(crc ^ v) & 0xFF];
         bool ok = std::memcmp(raw, sync, 12) == 0;
         if (ok && raw[15] == 2) {
             fe::u32 stored;
@@ -158,8 +181,18 @@ long verifyDisc(const std::string& path) {
         }
         if (!ok && bad++ < 10) std::printf("        bad sector at lba %u\n", lba);
     }
+    crc = ~crc;
     if (bad) std::printf("        %ld bad sectors: the image is damaged, rip the disc again\n", bad);
     else std::printf("        every sector is intact\n");
+    const std::uint64_t size = static_cast<std::uint64_t>(disc.sectorCount()) * 2352;
+    if (known && size == known->size && crc == known->crc) {
+        std::printf("        matches Redump (CRC32 %08X)\n", crc);
+    } else if (known) {
+        std::printf("        does not match Redump: %llu bytes, CRC32 %08X (Redump: %llu bytes, CRC32 %08X)\n",
+                    static_cast<unsigned long long>(size), crc, static_cast<unsigned long long>(known->size), known->crc);
+        if (!bad) std::printf("        the sectors are intact, so it is probably another kind of dump; it should still play\n");
+        else ++bad;
+    }
     return bad;
 }
 
@@ -224,6 +257,7 @@ int usage() {
                  "--video original|fast|best|seedvr2: AI upscaling of movies and backgrounds (best keeps an HD cache),\n"
                  "--widescreen: gameplay and movies (a letterboxed 2:1 picture) fill the width, without black bands,\n"
                  "--infinite-health and --infinite-ammo turn on the game's own cheats,\n"
+                 "--analog: a DualShock in analog mode (the game reads the left stick; also in FearEffectRe.ini),\n"
                  "--modern: the stick or D-pad moves the character in that direction on screen (no tank controls),\n"
                  "--build-hd-cache enlarges every movie and background frame of all discs into the HD cache (hours),\n"
                  "--build-seedvr2-cache does the same with SeedVR2 for --video seedvr2 (days).\n"
@@ -233,7 +267,7 @@ int usage() {
                  "--record FILE writes the pad input of every frame, --replay FILE plays it back instead of the pad.\n"
                  "--cheats FILE loads DuckStation .cht cheats (all of them, or only those named with --cheat NAME).\n"
                  "--cd-speed N loads data N times as fast as the console (1-8; movies and music keep their speed).\n"
-                 "--verify-disc checks every sector of the disc images for damage.\n"
+                 "--verify-disc compares the disc images with the Redump dumps and checks every sector for damage.\n"
                  "--volume 0-100, --mute, --audio-latency MS (40-340, default 100); also in FearEffectRe.ini [audio].\n"
                  "F11 or Alt+Enter switches between a window and fullscreen. Controls are set in FearEffectRe.ini.\n"
                  "Run without arguments for the launcher.\n");
@@ -294,6 +328,7 @@ int main(int argc, char** argv) {
     int volume = -1, audioLatency = -1;  // -1: from FearEffectRe.ini
     bool mute = false;
     bool verifyOnly = false;
+    bool analogPad = false;  // DualShock in analog mode instead of a digital pad
     fe::u64 ramFrom = 0;  // first frame --ram writes
     bool hdShots = false;  // --shots at the internal resolution instead of the console's
     for (int i = 2; i < argc; ++i) {
@@ -348,6 +383,7 @@ int main(int argc, char** argv) {
         else if (a == "--mute") mute = true;
         else if (a == "--audio-latency" && i + 1 < argc) audioLatency = std::clamp(std::atoi(argv[++i]), 40, 340);
         else if (a == "--modern") modern = true;
+        else if (a == "--analog") analogPad = true;
         else if (a == "--widescreen") widescreen = true;
         else if (a == "--infinite-health") infiniteHealth = true;
         else if (a == "--infinite-ammo") infiniteAmmo = true;
@@ -432,6 +468,9 @@ int main(int argc, char** argv) {
         std::printf("disc    %s (%u sectors, %zu files)\n", disc.volumeId().c_str(), disc.sectorCount(),
                     disc.files().size());
         std::printf("boot    %s, %zu bytes\n", boot->path.c_str(), exe.size());
+        for (const RedumpDisc& r : kRedump)
+            if (disc.volumeId() == r.volumeId && disc.raw() && static_cast<std::uint64_t>(disc.sectorCount()) * 2352 != r.size)
+                std::printf("note    this image is not the size of the Redump dump; --verify-disc checks it for damage\n");
 
         fe::Machine m;
         m.loadExe(exe);
@@ -479,6 +518,7 @@ int main(int argc, char** argv) {
             if (!ec) m.cardDir = savesDir;
         }
         m.sioTrace = logSio;
+        m.padAnalog = analogPad;
         const char* mode = "interpreter";
 #if FE_HAVE_RECOMP
         if (!interpreterOnly) {
@@ -499,6 +539,7 @@ int main(int argc, char** argv) {
             fe::u64 frame;
             fe::u16 mask;
             fe::u64 length;  // frames held
+            float stickX = 0, stickY = 0;  // left stick: stick-e/-w/-n/-s push it that way, fully or by the percent after it (stick-n40)
         };
         std::vector<Press> presses;
         {
@@ -518,6 +559,14 @@ int main(int argc, char** argv) {
                 if (size_t star = buttons.find('*'); star != std::string::npos) p.length = static_cast<fe::u64>(std::atoll(buttons.substr(star + 1).c_str()));
                 for (const auto& n : names)
                     if (buttons.find(n.first) != std::string::npos) p.mask |= n.second;
+                auto push = [&](const char* name) -> float {
+                    size_t at = buttons.find(name);
+                    if (at == std::string::npos) return 0.0f;
+                    int percent = std::atoi(buttons.c_str() + at + 7);
+                    return percent > 0 ? std::min(percent, 100) / 100.0f : 1.0f;
+                };
+                p.stickX = push("stick-e") - push("stick-w");
+                p.stickY = push("stick-n") - push("stick-s");
                 presses.push_back(p);
             }
         }
@@ -534,6 +583,11 @@ int main(int argc, char** argv) {
             if (volume < 0) volume = static_cast<int>(GetPrivateProfileIntW(L"audio", L"volume", 100, ini.c_str()));
             if (audioLatency < 0) audioLatency = static_cast<int>(GetPrivateProfileIntW(L"audio", L"latency", 100, ini.c_str()));
             mute = mute || GetPrivateProfileIntW(L"audio", L"mute", 0, ini.c_str()) != 0;
+            analogPad = analogPad || window->controls().analog;
+            app::Controls withPad = window->controls();
+            withPad.analog = analogPad;  // --analog too: the stick then stops pressing the D-pad
+            window->setControls(withPad);
+            m.padAnalog = analogPad;
             wchar_t probe[8];
             if (!GetPrivateProfileStringW(L"audio", L"volume", L"", probe, 8, ini.c_str())) {
                 WritePrivateProfileStringW(L"audio", L"volume", L"100", ini.c_str());
@@ -547,9 +601,13 @@ int main(int argc, char** argv) {
 #endif
         std::unique_ptr<app::InputRecorder> recorder;
         std::unique_ptr<app::InputReplay> replay;
-        if (!recordPath.empty()) recorder = std::make_unique<app::InputRecorder>(recordPath);
+        if (!recordPath.empty()) recorder = std::make_unique<app::InputRecorder>(recordPath, analogPad, modern);
         if (!replayPath.empty()) {
             replay = std::make_unique<app::InputReplay>(replayPath);
+            // played back with the pad and movement it was recorded with
+            analogPad = replay->analog();
+            m.padAnalog = analogPad;
+            modern = replay->modern();
             std::printf("replay  %s (input until frame %llu)\n", replayPath.c_str(), static_cast<unsigned long long>(replay->lastFrame()));
         }
         std::unique_ptr<app::Cheats> cheats;
@@ -697,6 +755,16 @@ int main(int argc, char** argv) {
                         slot = (slot + (key == app::Hotkey::NextSlot ? 1 : 7)) % 9 + 1;
                         std::error_code ec;
                         say("slot " + std::to_string(slot) + (std::filesystem::exists(slotPath(slot), ec) ? "" : " (empty)"));
+                    } else if (key == app::Hotkey::Controls) {
+                        if (window->editControls(app::settingsPath())) {
+                            // a recording keeps the pad it started with
+                            if (!recorder && !replay) analogPad = window->controls().analog;
+                            app::Controls withPad = window->controls();
+                            withPad.analog = analogPad;
+                            window->setControls(withPad);
+                            m.padAnalog = analogPad;
+                            say("controls saved");
+                        }
                     } else if (key == app::Hotkey::SaveState) {
                         requestSave(slotPath(slot));
                     } else {
@@ -712,11 +780,54 @@ int main(int argc, char** argv) {
 #endif
             m.audio.clear();
             for (const auto& p : presses)
-                if (m.frame >= p.frame && m.frame < p.frame + p.length) held |= p.mask;
+                if (m.frame >= p.frame && m.frame < p.frame + p.length) {
+                    held |= p.mask;
+                    if (p.stickX || p.stickY) {
+                        analog = true;
+                        stickX = p.stickX;
+                        stickY = p.stickY;
+                    }
+                }
+            // The stick at the pad's resolution (a byte per axis, 80h centre),
+            // so a replay, which has only those bytes, steers exactly alike.
+            fe::u8 rawX = 0x80, rawY = 0x80;
+            if (analog) {
+                rawX = static_cast<fe::u8>(std::clamp(std::lround(128.0f + stickX * 127.5f), 0L, 255L));
+                rawY = static_cast<fe::u8>(std::clamp(std::lround(128.0f - stickY * 127.5f), 0L, 255L));
+                if (rawX == 0x80 && rawY == 0x80) rawY = 0x7F;  // pushed, however little
+            }
+            // --replay: the recorded controller replaces everything above;
+            // --record: what the player did, before modern movement
+            if (replay) {
+                held = replay->buttons(m.frame);
+                const fe::u16 st = replay->stick(m.frame);
+                rawX = static_cast<fe::u8>(st >> 8);
+                rawY = static_cast<fe::u8>(st);
+            }
+            if (recorder) recorder->buttons(m.frame, held, static_cast<fe::u16>((rawX << 8) | rawY));
+            analog = rawX != 0x80 || rawY != 0x80;
+            stickX = analog ? (rawX - 128.0f) / 127.5f : 0.0f;
+            stickY = analog ? (128.0f - rawY) / 127.5f : 0.0f;
+
             if (modern) held = modernControls.apply(m, held, analog, stickX, stickY);
-            // --replay: the recorded pad replaces everything above; --record: what the game gets
-            if (replay) held = replay->buttons(m.frame);
-            if (recorder) recorder->buttons(m.frame, held);
+            if (analogPad) {
+                // the left stick as the game sees it: 00h left/up, 80h centre, FFh right/down
+                auto axis = [](float v) { return static_cast<fe::u8>(std::clamp(128.0f + v * 127.5f, 0.0f, 255.0f)); };
+                float ax = analog ? stickX : 0.0f, ay = analog ? stickY : 0.0f;
+                if (modern && modernControls.steering()) {
+                    // Modern movement turns the character and walks it forward: the
+                    // game must see the stick pushed forward too (it reads the stick
+                    // the tank way), as far as the player pushes it, so slow walking
+                    // still works. Nothing while it is still turning.
+                    const float push = analog ? std::min(1.0f, std::hypot(stickX, stickY)) : 1.0f;
+                    ax = 0.0f;
+                    ay = (held & 0x0010) ? push : 0.0f;
+                    // the D-pad would make it walk at full speed whatever the stick says
+                    if (analog) held = static_cast<fe::u16>(held & ~0x00F0);
+                }
+                m.padAxes[2] = axis(ax);
+                m.padAxes[3] = axis(-ay);
+            }
             if (cheats) cheats->apply(m.ram.get());
             // The game's own cheat switches (the published GameShark codes
             // 80077810 0001 and 0002): bit 0 infinite ammo, bit 1 infinite health.

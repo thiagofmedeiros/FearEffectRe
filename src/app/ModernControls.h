@@ -25,7 +25,12 @@ public:
     // to the game, and may turn the character.
     fe::u16 apply(fe::Machine& m, fe::u16 held, bool analog, float x, float y);
 
+    // The last apply() steered the character (the direction buttons it
+    // returned are "forward" or nothing, not what was pressed).
+    bool steering() const { return steering_; }
+
 private:
+    bool steering_ = false;
     bool findCamera(fe::Machine& m);
 
     std::array<int, 9> camera_{};  // row-major, 4096 = 1.0

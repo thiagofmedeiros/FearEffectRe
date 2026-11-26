@@ -82,6 +82,7 @@ bool ModernControls::findCamera(fe::Machine& m) {
 
 fe::u16 ModernControls::apply(fe::Machine& m, fe::u16 held, bool analog, float x, float y) {
     m.recordRotations = true;
+    steering_ = false;
     const fe::u32 clock = read32(m, kPlayClock);
     if (clock != clock_) {
         clock_ = clock;
@@ -100,6 +101,7 @@ fe::u16 ModernControls::apply(fe::Machine& m, fe::u16 held, bool analog, float x
     // the game ticks at 30 a second: a clock still for 4 frames is stopped
     const bool playing = m.frame - clockFrame_ <= 4;
     if (!playing || !sane || !haveCamera_ || m.frame - cameraFrame_ > kCameraStale) return held;
+    steering_ = true;
 
     if (!analog) {
         x = static_cast<float>(((held & kRight) ? 1 : 0) - ((held & kLeft) ? 1 : 0));
@@ -112,7 +114,10 @@ fe::u16 ModernControls::apply(fe::Machine& m, fe::u16 held, bool analog, float x
     // the viewer, which is up on the screen for a camera looking down.
     const double c00 = camera_[0], c02 = camera_[2], c20 = camera_[6], c22 = camera_[8];
     const double det = c00 * c22 - c02 * c20;
-    if (std::fabs(det) < 1e5) return held;  // looking straight down the ground plane
+    if (std::fabs(det) < 1e5) {  // looking straight down the ground plane
+        steering_ = false;
+        return held;
+    }
     const double dx = (x * c22 - y * c02) / det, dz = (y * c00 - x * c20) / det;
     // walking forward at angle a moves along (-sin a, -cos a)
     const int target = static_cast<int>(std::lround(std::atan2(-dx, -dz) * (2048.0 / kPi))) & 4095;

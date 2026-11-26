@@ -37,180 +37,10 @@
 
 namespace app {
 
-namespace {
-// XInput is loaded at run time so the program still starts where it is missing.
-struct PadState {
-    DWORD packet;
-    WORD buttons;
-    BYTE leftTrigger, rightTrigger;
-    SHORT lx, ly, rx, ry;
-};
-using GetPadState = DWORD(WINAPI*)(DWORD, PadState*);
-
-GetPadState loadXInput() {
-    for (const wchar_t* name : {L"xinput1_4.dll", L"xinput1_3.dll", L"xinput9_1_0.dll"})
-        if (HMODULE lib = LoadLibraryW(name))
-            if (auto fn = reinterpret_cast<GetPadState>(reinterpret_cast<void*>(GetProcAddress(lib, "XInputGetState"))))
-                return fn;
-    return nullptr;
-}
-}  // namespace
-
-// ---- controls ----------------------------------------------------------------
-
-const char* const Controls::kButtonNames[16] = {"select", "l3", "r3",       "start",  "up",    "right", "down", "left",
-                                                "l2",     "r2", "l1",       "r1",     "triangle", "circle", "cross", "square"};
 
 namespace {
-
-struct Named {
-    const wchar_t* name;
-    unsigned code;
-};
-
-// Key names for the ini file; letters and digits are written as themselves.
-const Named kKeyNames[] = {
-    {L"Up", VK_UP}, {L"Down", VK_DOWN}, {L"Left", VK_LEFT}, {L"Right", VK_RIGHT}, {L"Enter", VK_RETURN},
-    {L"Esc", VK_ESCAPE}, {L"Space", VK_SPACE}, {L"Tab", VK_TAB}, {L"Backspace", VK_BACK}, {L"LShift", VK_LSHIFT},
-    {L"RShift", VK_RSHIFT}, {L"LCtrl", VK_LCONTROL}, {L"RCtrl", VK_RCONTROL}, {L"Alt", VK_MENU}, {L"Home", VK_HOME},
-    {L"End", VK_END}, {L"PageUp", VK_PRIOR}, {L"PageDown", VK_NEXT}, {L"Insert", VK_INSERT}, {L"Delete", VK_DELETE},
-    {L"F9", VK_F9}, {L"F10", VK_F10}, {L"F12", VK_F12}, {L"Numpad0", VK_NUMPAD0}, {L"Numpad1", VK_NUMPAD1},
-    {L"Numpad2", VK_NUMPAD2}, {L"Numpad3", VK_NUMPAD3}, {L"Numpad4", VK_NUMPAD4}, {L"Numpad5", VK_NUMPAD5},
-    {L"Numpad6", VK_NUMPAD6}, {L"Numpad7", VK_NUMPAD7}, {L"Numpad8", VK_NUMPAD8}, {L"Numpad9", VK_NUMPAD9},
-    {L"Comma", VK_OEM_COMMA}, {L"Period", VK_OEM_PERIOD}, {L"Semicolon", VK_OEM_1}, {L"Slash", VK_OEM_2},
-};
-
-constexpr unsigned kPadLT = 0x10000, kPadRT = 0x20000;
-const Named kPadNames[] = {
-    {L"A", 0x1000}, {L"B", 0x2000}, {L"X", 0x4000}, {L"Y", 0x8000}, {L"LB", 0x0100}, {L"RB", 0x0200},
-    {L"LT", kPadLT}, {L"RT", kPadRT}, {L"Back", 0x0020}, {L"Start", 0x0010}, {L"LS", 0x0040}, {L"RS", 0x0080},
-    {L"DPadUp", 0x0001}, {L"DPadDown", 0x0002}, {L"DPadLeft", 0x0004}, {L"DPadRight", 0x0008},
-};
-
-std::wstring keyName(int vk) {
-    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) return std::wstring(1, static_cast<wchar_t>(vk));
-    for (const Named& n : kKeyNames)
-        if (static_cast<int>(n.code) == vk) return n.name;
-    return L"";
-}
-
-bool sameName(const std::wstring& a, const wchar_t* b) { return _wcsicmp(a.c_str(), b) == 0; }
-
-int keyCode(const std::wstring& name) {
-    if (name.size() == 1) {
-        wchar_t ch = static_cast<wchar_t>(std::towupper(name[0]));
-        if ((ch >= L'A' && ch <= L'Z') || (ch >= L'0' && ch <= L'9')) return ch;
-    }
-    for (const Named& n : kKeyNames)
-        if (sameName(name, n.name)) return static_cast<int>(n.code);
-    return 0;
-}
-
-unsigned padCode(const std::wstring& name) {
-    for (const Named& n : kPadNames)
-        if (sameName(name, n.name)) return n.code;
-    return 0;
-}
-
-std::wstring padName(unsigned code) {
-    for (const Named& n : kPadNames)
-        if (n.code == code) return n.name;
-    return L"";
-}
-
-std::vector<std::wstring> splitList(const std::wstring& text) {
-    std::vector<std::wstring> out;
-    size_t pos = 0;
-    while (pos <= text.size()) {
-        size_t end = text.find(L',', pos);
-        if (end == std::wstring::npos) end = text.size();
-        std::wstring item = text.substr(pos, end - pos);
-        size_t a = item.find_first_not_of(L" \t"), b = item.find_last_not_of(L" \t");
-        if (a != std::wstring::npos) out.push_back(item.substr(a, b - a + 1));
-        pos = end + 1;
-    }
-    return out;
-}
-
-std::wstring widenAscii(const char* s) { return std::wstring(s, s + std::strlen(s)); }
-
 bool down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
-
 }  // namespace
-
-Controls Controls::defaults() {
-    Controls c;
-    auto k = [&](int bit, std::initializer_list<int> keys) { c.keys[bit] = keys; };
-    k(0, {VK_BACK});
-    k(3, {'P'});
-    k(4, {'W', VK_UP});
-    k(5, {'D', VK_RIGHT});
-    k(6, {'S', VK_DOWN});
-    k(7, {'A', VK_LEFT});
-    k(8, {'1'});
-    k(9, {'4'});
-    k(10, {VK_TAB});
-    k(11, {'R'});
-    k(12, {VK_SPACE});
-    k(13, {'Q', VK_ESCAPE});
-    k(14, {'E', VK_RETURN});
-    k(15, {'F'});
-    auto p = [&](int bit, std::initializer_list<unsigned> codes) { c.pad[bit] = codes; };
-    p(0, {0x0020});
-    p(3, {0x0010});
-    p(4, {0x0001});
-    p(5, {0x0008});
-    p(6, {0x0002});
-    p(7, {0x0004});
-    p(8, {kPadLT});
-    p(9, {kPadRT});
-    p(10, {0x0100});
-    p(11, {0x0200});
-    p(12, {0x8000});
-    p(13, {0x2000});
-    p(14, {0x1000});
-    p(15, {0x4000});
-    return c;
-}
-
-Controls Controls::load(const std::wstring& ini) {
-    Controls c = defaults();
-    wchar_t buf[512];
-    // a missing section is written out with the defaults, so it can be edited
-    const bool haveKeys = GetPrivateProfileSectionW(L"keyboard", buf, 512, ini.c_str()) > 0;
-    const bool havePad = GetPrivateProfileSectionW(L"controller", buf, 512, ini.c_str()) > 0;
-    for (int bit = 0; bit < 16; ++bit) {
-        const std::wstring button = widenAscii(kButtonNames[bit]);
-        if (haveKeys) {
-            GetPrivateProfileStringW(L"keyboard", button.c_str(), L"", buf, 512, ini.c_str());
-            c.keys[bit].clear();
-            for (const auto& name : splitList(buf))
-                if (int vk = keyCode(name)) c.keys[bit].push_back(vk);
-        } else {
-            std::wstring list;
-            for (int vk : c.keys[bit]) list += (list.empty() ? L"" : L", ") + keyName(vk);
-            WritePrivateProfileStringW(L"keyboard", button.c_str(), list.c_str(), ini.c_str());
-        }
-        if (havePad) {
-            GetPrivateProfileStringW(L"controller", button.c_str(), L"", buf, 512, ini.c_str());
-            c.pad[bit].clear();
-            for (const auto& name : splitList(buf))
-                if (unsigned code = padCode(name)) c.pad[bit].push_back(code);
-        } else {
-            std::wstring list;
-            for (unsigned code : c.pad[bit]) list += (list.empty() ? L"" : L", ") + padName(code);
-            WritePrivateProfileStringW(L"controller", button.c_str(), list.c_str(), ini.c_str());
-        }
-    }
-    if (havePad) {
-        c.deadzone = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"controller", L"deadzone", c.deadzone, ini.c_str())), 0, 90);
-        c.stickAsDpad = GetPrivateProfileIntW(L"controller", L"stick_as_dpad", 1, ini.c_str()) != 0;
-    } else {
-        WritePrivateProfileStringW(L"controller", L"deadzone", std::to_wstring(c.deadzone).c_str(), ini.c_str());
-        WritePrivateProfileStringW(L"controller", L"stick_as_dpad", L"1", ini.c_str());
-    }
-    return c;
-}
 
 // ---- window --------------------------------------------------------------------
 
@@ -342,9 +172,8 @@ struct Window::Impl {
             h = w * 3 / 4;
         }
     }
-    GetPadState xinput = loadXInput();
-    DWORD padIndex = 0;       // controller slot that answered last
-    int padRetry = 0;         // frames until disconnected slots are probed again
+    Pads pads;
+    PadSnapshot pad;          // read by buttons(), used by stick() too
     static constexpr int kBuffers = 24;
     WAVEHDR headers[kBuffers]{};
     std::vector<std::int16_t> buffers[kBuffers];
@@ -633,6 +462,7 @@ std::vector<Hotkey> Window::hotkeys() {
     if (impl_->edge(VK_F6, focused)) out.push_back(Hotkey::SaveState);
     if (impl_->edge(VK_F7, focused)) out.push_back(Hotkey::LoadState);
     if (impl_->edge(VK_F8, focused)) out.push_back(shift ? Hotkey::PrevSlot : Hotkey::NextSlot);
+    if (impl_->edge(VK_F9, focused)) out.push_back(Hotkey::Controls);
     return out;
 }
 
@@ -688,50 +518,41 @@ std::uint16_t Window::buttons() const {
     for (int bit = 0; bit < 16; ++bit)
         for (int vk : ctl.keys[bit])
             if (down(vk)) b |= static_cast<std::uint16_t>(1u << bit);
-
-    // Xbox controller (XInput): the first connected one. Probing empty
-    // slots is slow, so that is only done about once a second.
-    if (impl_->xinput) {
-        PadState pad{};
-        bool found = impl_->xinput(impl_->padIndex, &pad) == ERROR_SUCCESS;
-        if (!found && --impl_->padRetry <= 0) {
-            impl_->padRetry = 60;
-            for (DWORD i = 0; i < 4 && !found; ++i)
-                if (impl_->xinput(i, &pad) == ERROR_SUCCESS) {
-                    impl_->padIndex = i;
-                    found = true;
-                }
-        }
-        if (found) {
-            unsigned held = pad.buttons;
-            if (pad.leftTrigger > 64) held |= kPadLT;
-            if (pad.rightTrigger > 64) held |= kPadRT;
-            for (int bit = 0; bit < 16; ++bit)
-                for (unsigned code : ctl.pad[bit])
-                    if (held & code) b |= static_cast<std::uint16_t>(1u << bit);
-            if (ctl.stickAsDpad) {
-                const int dead = 32767 * ctl.deadzone / 100;
-                if (pad.ly > dead) b |= 0x0010;
-                if (pad.lx > dead) b |= 0x0020;
-                if (pad.ly < -dead) b |= 0x0040;
-                if (pad.lx < -dead) b |= 0x0080;
-            }
+    const PadSnapshot& pad = impl_->pad = impl_->pads.poll();
+    if (pad.connected) {
+        for (int bit = 0; bit < 16; ++bit)
+            for (unsigned code : ctl.pad[bit])
+                if (pad.held(code)) b |= static_cast<std::uint16_t>(1u << bit);
+        if (ctl.stickAsDpad && !ctl.analog) {  // an analog pad does not press the D-pad with its stick
+            const float dead = ctl.deadzone / 100.0f;
+            if (pad.ly > dead) b |= 0x0010;
+            if (pad.lx > dead) b |= 0x0020;
+            if (pad.ly < -dead) b |= 0x0040;
+            if (pad.lx < -dead) b |= 0x0080;
         }
     }
     return b;
 }
 
 bool Window::stick(float& x, float& y) const {
-    if (!impl_->xinput || GetForegroundWindow() != impl_->hwnd) return false;
-    PadState pad{};
-    if (impl_->xinput(impl_->padIndex, &pad) != ERROR_SUCCESS) return false;
-    const float fx = pad.lx / 32767.0f, fy = pad.ly / 32767.0f;
+    const PadSnapshot& pad = impl_->pad;
+    if (!pad.connected || GetForegroundWindow() != impl_->hwnd) return false;
     const float dead = impl_->controls.deadzone / 100.0f;  // same dead zone as the stick-as-D-pad
-    if (fx * fx + fy * fy < dead * dead) return false;
-    x = fx;
-    y = fy;
+    if (pad.lx * pad.lx + pad.ly * pad.ly < dead * dead) return false;
+    x = pad.lx;
+    y = pad.ly;
     return true;
 }
+
+bool Window::editControls(const std::wstring& iniPath) {
+    // the game stops while the window is open; the keys that opened it are forgotten
+    const bool changed = runControlsDialog(impl_->hwnd, impl_->controls, iniPath);
+    for (bool& k : impl_->keyWas) k = true;
+    QueryPerformanceCounter(&impl_->next);
+    return changed;
+}
+
+const Controls& Window::controls() const { return impl_->controls; }
 
 bool Window::pump() {
     MSG msg;

@@ -1,5 +1,7 @@
 #include "Launcher.h"
 
+#include "Controls.h"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -53,7 +55,7 @@ std::vector<Display> listDisplays() {
 
 namespace {
 
-enum : int { kIdPath = 101, kIdBrowse, kIdResolution, kIdFullscreen, kIdPlay, kIdQuit, kIdDisplay, kIdVideo, kIdBuildCache, kIdModern, kIdWidescreen, kIdHealth, kIdAmmo };
+enum : int { kIdPath = 101, kIdBrowse, kIdResolution, kIdFullscreen, kIdPlay, kIdQuit, kIdDisplay, kIdVideo, kIdBuildCache, kIdModern, kIdWidescreen, kIdHealth, kIdAmmo, kIdControls };
 
 struct State {
     HWND path = nullptr, combo = nullptr, full = nullptr, display = nullptr;
@@ -220,6 +222,11 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 }
                 case kIdQuit: st->done = true; return 0;
+                case kIdControls: {
+                    Controls controls = Controls::load(iniPath());
+                    runControlsDialog(hwnd, controls, iniPath());
+                    return 0;
+                }
                 default: break;
             }
             break;
@@ -320,6 +327,7 @@ bool runLauncher(LaunchSettings& settings) {
     SendMessageW(st.ammo, BM_SETCHECK, ammo ? BST_CHECKED : BST_UNCHECKED, 0);
     make(L"STATIC", L"The picture keeps its shape: 4:3, or 2:1 in widescreen.", 0, 16, 222 + extra, 488, 18, 0);
     make(L"BUTTON", L"Build HD cache...", WS_TABSTOP, 16, 256 + extra, 140, 30, kIdBuildCache);
+    make(L"BUTTON", L"Controls...", WS_TABSTOP, 162, 256 + extra, 100, 30, kIdControls);
     make(L"BUTTON", L"Play", WS_TABSTOP | BS_DEFPUSHBUTTON, 314, 256 + extra, 92, 30, kIdPlay);
     make(L"BUTTON", L"Quit", WS_TABSTOP, 412, 256 + extra, 92, 30, kIdQuit);
 

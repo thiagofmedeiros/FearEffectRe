@@ -73,7 +73,8 @@ endif()
 
 add_executable(FearEffectRe src/app/main.cpp src/app/ModernControls.cpp)
 if(WIN32)
-    target_sources(FearEffectRe PRIVATE src/app/Window.cpp src/app/Launcher.cpp src/app/VideoAI.cpp src/app/StrVideo.cpp)
+    enable_language(RC)
+    target_sources(FearEffectRe PRIVATE src/app/FearEffectRe.rc src/app/Controls.cpp src/app/Window.cpp src/app/Launcher.cpp src/app/VideoAI.cpp src/app/StrVideo.cpp)
     target_include_directories(FearEffectRe PRIVATE third_party/onnxruntime/include)
     target_link_libraries(FearEffectRe PRIVATE user32 gdi32 winmm comdlg32 opengl32 ole32 windowscodecs)
     # AI upscaling: a folder holding onnxruntime.dll, DirectML.dll, fast_x4.onnx and

@@ -269,10 +269,12 @@ void Machine::sioTransmit(u8 value) {
     if (port1 && (sio.ctrl & 0x02) && sio.step >= 0) {
         switch (sio.step) {
             case 0: ack = value == 0x01; break;                   // pad access; 81h = memory card
-            case 1: rx = 0x41; ack = value == 0x42; break;        // digital pad id
+            case 1: rx = padAnalog ? 0x73 : 0x41; ack = value == 0x42; break;  // pad id
             case 2: rx = 0x5A; ack = true; break;
             case 3: rx = padState & 0xFF; ack = true; break;
-            case 4: rx = padState >> 8; break;                    // last byte: no acknowledge
+            case 4: rx = padState >> 8; ack = padAnalog; break;   // a digital pad's last byte: no acknowledge
+            case 5: case 6: case 7: rx = padAxes[sio.step - 5]; ack = true; break;
+            case 8: rx = padAxes[3]; break;
             default: break;
         }
         sio.step = ack ? sio.step + 1 : -1;

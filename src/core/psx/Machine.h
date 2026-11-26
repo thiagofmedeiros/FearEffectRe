@@ -173,6 +173,10 @@ struct Machine {
     u32 padLen[2]{};
     bool padStarted = false;
     u16 padState = 0xFFFF;                        // active-low digital pad buttons
+    // DualShock in analog mode: the pad answers with id 73h and the four
+    // stick bytes (right x, right y, left x, left y; 00h left/up, 80h centre, FFh right/down).
+    bool padAnalog = false;
+    u8 padAxes[4] = {0x80, 0x80, 0x80, 0x80};
     u32 heapBase = 0, heapSize = 0;
     u32 randSeed = 0;
     // Memory card in slot 1, kept as one host file per save in `cardDir`

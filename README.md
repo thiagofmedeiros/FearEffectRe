@@ -112,10 +112,14 @@ state remembers which disc was in the drive.
 - **Window or fullscreen**: F11 or Alt+Enter switches while playing.
 - **Faster loading** (optional): `--cd-speed 4` reads the disc four times as fast (up to 8).
   Movies, the moving backgrounds and the music still play at their own speed.
-- **Keyboard and Xbox controller**, no adapter needed, with the buttons set in `FearEffectRe.ini`.
+- **Keyboard, Xbox controller or any other game controller** (DualShock 4, DualSense, USB
+  pads), no adapter needed. The buttons can be changed in the **Controls** window (F9 in the
+  game, or **Controls...** in the launcher).
+- **Analog pad** (optional): the game sees a DualShock in analog mode and reads its left stick.
 - **Sound**: volume, mute and latency in `FearEffectRe.ini` or on the command line.
 - **Cheat files**: DuckStation `.cht` files with GameShark codes (`--cheats file.cht`).
-- **Disc check**: `--verify-disc` checks every sector of the four disc images for damage.
+- **Disc check**: `--verify-disc` compares the four disc images with the Redump dumps and checks
+  every sector for damage, so a good image that is not the Redump dump can be told from a bad one.
 
 ## Playing
 
@@ -124,24 +128,31 @@ choose your disc 1 image, a resolution (Original 640x480, 720p, 1080p, 1440p or 
 fullscreen, the display (with more than one monitor), the video mode and the options above,
 then press **Play**. The choices are remembered in `FearEffectRe.ini` next to the program.
 
-| PlayStation | Keyboard | Xbox controller |
-|---|---|---|
-| D-pad | Arrows or WASD | D-pad or left stick |
-| Cross | E or Enter | A |
-| Circle | Q or Esc | B |
-| Square | F | X |
-| Triangle | Space | Y |
-| L1 / R1 | Tab / R | LB / RB |
-| L2 / R2 | 1 / 4 | LT / RT |
-| Start / Select | P / Backspace | Start / Back |
+| PlayStation | Keyboard | Xbox controller | Other controller (DualShock 4 / DualSense) |
+|---|---|---|---|
+| D-pad | Arrows or WASD | D-pad or left stick | D-pad or left stick |
+| Cross | E or Enter | A | Cross |
+| Circle | Q or Esc | B | Circle |
+| Square | F | X | Square |
+| Triangle | Space | Y | Triangle |
+| L1 / R1 | Tab / R | LB / RB | L1 / R1 |
+| L2 / R2 | 1 / 4 | LT / RT | L2 / R2 |
+| Start / Select | P / Backspace | Start / Back | Options / Share |
+
+Other controllers are read through Windows' game controller support while no Xbox controller is
+connected. Their buttons are numbered by the controller (`Button1` to `Button32` and the hat
+`PovUp` ... `PovLeft`); the defaults follow a DualShock 4 or DualSense. For another controller,
+set its buttons in the Controls window.
 
 F1 fast-forwards, F2 to F5 insert disc 1 to 4 (found next to the first by their `(Disc N)`
-name), F6 saves a state, F7 loads it, F8 / Shift+F8 change the slot, F11 or Alt+Enter switches
-between a window and fullscreen.
+name), F6 saves a state, F7 loads it, F8 / Shift+F8 change the slot, F9 opens the Controls
+window (the game waits meanwhile), F11 or Alt+Enter switches between a window and fullscreen.
 
 ### Controls and sound settings
 
-The first time the game runs it adds the buttons to `FearEffectRe.ini`; change them there. Each
+In the Controls window, click a box and press a key or controller button to add it to that
+PlayStation button (or to take it off, if it is there already); right-click a box to empty it.
+**Save** keeps the changes in `FearEffectRe.ini`, where they can also be edited by hand. Each
 PlayStation button takes a list of keys and a list of controller buttons:
 
 ```ini
@@ -149,10 +160,11 @@ PlayStation button takes a list of keys and a list of controller buttons:
 cross=E, Enter
 circle=Q, Esc
 [controller]
-cross=A
-l2=LT
+cross=A, Button2
+l2=LT, Button7
 deadzone=37
 stick_as_dpad=1
+analog=0
 [audio]
 volume=100
 mute=0
@@ -161,12 +173,15 @@ latency=100
 
 Keys are letters, digits, `Up` `Down` `Left` `Right` `Enter` `Esc` `Space` `Tab` `Backspace`
 `LShift` `RShift` `LCtrl` `RCtrl` `Alt` `Home` `End` `PageUp` `PageDown` `Insert` `Delete`
-`F9` `F10` `F12` `Numpad0`-`Numpad9` `Comma` `Period` `Semicolon` `Slash`. Controller buttons
-are `A` `B` `X` `Y` `LB` `RB` `LT` `RT` `Back` `Start` `LS` `RS` `DPadUp` `DPadDown`
-`DPadLeft` `DPadRight`. The buttons are `select` `start` `up` `down` `left` `right` `l1` `r1`
+`F10` `F12` `Numpad0`-`Numpad9` `Comma` `Period` `Semicolon` `Slash` `Minus` `Equals`
+`LBracket` `RBracket` `Quote` `Backslash`. Controller buttons are `A` `B` `X` `Y` `LB` `RB`
+`LT` `RT` `Back` `Start` `LS` `RS` `DPadUp` `DPadDown` `DPadLeft` `DPadRight` (Xbox) and
+`Button1`-`Button32` `PovUp` `PovDown` `PovLeft` `PovRight` (other controllers). The buttons are `select` `start` `up` `down` `left` `right` `l1` `r1`
 `l2` `r2` `triangle` `circle` `cross` `square` (and `l3` `r3`, which this game does not use).
 `deadzone` is how far the left stick has to move (percent) and `stick_as_dpad=0` stops it
-pressing the D-pad. `latency` is how much sound is queued ahead, in milliseconds (40 to 340):
+pressing the D-pad. `analog=1` (or `--analog`) makes the pad a DualShock in analog mode: the
+game reads the left stick itself: pushed fully, Hana walks as with the D-pad; pushed less, she
+moves more slowly. With modern movement on as well, the stick still sets her speed. `latency` is how much sound is queued ahead, in milliseconds (40 to 340):
 lower is more immediate, higher is safer on a busy PC.
 
 The same can be given on the command line, which starts the game directly:
@@ -186,7 +201,8 @@ only the ones named with `--cheat "Name"` (repeat it for several). Codes 80 and 
 
 `--record file` writes the controller input of every frame (and disc changes) to a text file,
 and `--replay file` plays the game with exactly that input again, which reproduces the session
-frame for frame. Record from the start of the game, not after loading a state.
+frame for frame. A recording remembers whether the pad was analog and modern movement was on, and
+is played back the same way. Record from the start of the game, not after loading a state.
 
 ## Status
 
@@ -209,7 +225,7 @@ anything past the first area. There is no reverb.
 | GPU | Software renderer, 1x to 16x internal resolution, multithreaded; no dithering, no texture filtering, edge rules not pixel-exact |
 | Geometry engine (GTE) | All commands; not verified against hardware test vectors |
 | SPU | 24 voices, envelopes, XA audio; no reverb, noise or pitch modulation |
-| Controller | Digital pad in port 1 from the keyboard or an Xbox controller |
+| Controller | Digital pad, or DualShock in analog mode, in port 1 from the keyboard or a controller; no vibration |
 | Memory card | Slot 1 as files in `saves/` |
 | Overlays loaded from the disc | Run in the interpreter; not recompiled yet |
 
@@ -237,7 +253,8 @@ build/FearEffectRe disc.cue --frames 3000 --input "500:start,1300:start,2000:up*
 
 `--frames N` runs headless for N frames and prints a report: where it stopped, the game's
 console output, calls and devices that are not implemented, and the busiest hardware
-registers. `--input` presses buttons at given frames (`*n` holds for n frames), `--shots`
+registers. `--input` presses buttons at given frames (`*n` holds for n frames; with
+`--analog`, `stick-n` `stick-s` `stick-e` `stick-w` push the left stick), `--shots`
 writes a PNG every `--every` frames (`--hd-shots` at the internal resolution), `--dump` and
 `--dump-vram` write the last picture and video memory, `--ram dir` writes main memory next to
 each screenshot (from frame `--ram-from N`; for finding game variables), `--wav` writes the
