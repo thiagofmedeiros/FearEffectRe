@@ -46,6 +46,17 @@ bool down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
 
 struct Window::Impl {
     HWND hwnd = nullptr;
+    // Vsync: on a monitor at (a multiple of) about 60 Hz the picture is
+    // swapped on the display's refresh, which then times the frames (no
+    // tearing, no frame shown twice when the two clocks drift); the sound is
+    // kept in step by a sample more or less now and then. Other refresh
+    // rates (144 Hz...) keep the program's own timer.
+    using SwapIntervalFn = BOOL(WINAPI*)(int);
+    SwapIntervalFn swapInterval = nullptr;
+    HMONITOR monitor = nullptr;
+    int vsyncEvery = 0;   // refreshes per frame, 0: off
+    int interval = -1;    // swap interval set now
+    LARGE_INTEGER lastPace{};
     Controls controls = Controls::defaults();
     int volume = 100;  // percent, 0 when muted
     bool keyWas[256]{};
@@ -376,9 +387,11 @@ Window::Window(int width, int height, bool fullscreen, int display, bool visible
     int pf = ChoosePixelFormat(impl_->glDc, &pfd);
     if (pf && SetPixelFormat(impl_->glDc, pf, &pfd)) impl_->gl = wglCreateContext(impl_->glDc);
     if (impl_->gl && wglMakeCurrent(impl_->glDc, impl_->gl)) {
-        // the game is paced by its own timer: do not also wait for the display
-        using SwapInterval = BOOL(WINAPI*)(int);
-        if (auto swap = reinterpret_cast<SwapInterval>(reinterpret_cast<void*>(wglGetProcAddress("wglSwapIntervalEXT")))) swap(0);
+        // the swap waits for the display only on a 60 Hz class monitor (see pace())
+        impl_->swapInterval =
+            reinterpret_cast<Impl::SwapIntervalFn>(reinterpret_cast<void*>(wglGetProcAddress("wglSwapIntervalEXT")));
+        if (impl_->swapInterval) impl_->swapInterval(0);
+        impl_->interval = 0;
         for (GLuint* tex : {&impl_->texture, &impl_->texture16}) {
             glGenTextures(1, tex);
             glBindTexture(GL_TEXTURE_2D, *tex);
@@ -437,15 +450,20 @@ void Window::audio(const std::vector<std::int16_t>& stereo) {
         std::vector<std::int16_t> silence(stereo.size(), 0);
         for (int i = 0; i < impl_->audioLow; ++i) impl_->write(silence);
     }
-    if (impl_->volume >= 100) {
-        impl_->write(stereo);  // false when every buffer is queued: this block is dropped
-        return;
+    std::vector<std::int16_t> block(stereo);
+    if (impl_->vsyncEvery && block.size() >= 4) {
+        // the display times the frames: one sample more or less keeps the
+        // queue in range (about 0.14%, not audible)
+        const int q = impl_->queued();
+        if (q > impl_->audioHigh) block.resize(block.size() - 2);
+        else if (q < impl_->audioLow) block.insert(block.end(), block.end() - 2, block.end());
     }
-    // the gain is cubic, so loudness follows the setting roughly evenly
-    const double g = std::pow(impl_->volume / 100.0, 3.0);
-    std::vector<std::int16_t> scaled(stereo.size());
-    for (size_t i = 0; i < stereo.size(); ++i) scaled[i] = static_cast<std::int16_t>(std::lround(stereo[i] * g));
-    impl_->write(scaled);
+    if (impl_->volume < 100) {
+        // the gain is cubic, so loudness follows the setting roughly evenly
+        const double g = std::pow(impl_->volume / 100.0, 3.0);
+        for (auto& v : block) v = static_cast<std::int16_t>(std::lround(v * g));
+    }
+    impl_->write(block);  // false when every buffer is queued: this block is dropped
 }
 
 void Window::setAudio(int volume, bool mute, int latencyMs) {
@@ -567,10 +585,49 @@ bool Window::pump() {
     return true;
 }
 
+bool Window::syncedToDisplay() const { return impl_->vsyncEvery > 0 && !fastForward(); }
+
 void Window::pace() {
-    // 59.94 frames per second unless fast-forwarding
+    Impl& im = *impl_;
+    // the monitor the window is on: vsync when it runs at about 60 Hz (or a multiple)
+    if (im.swapInterval) {
+        HMONITOR mon = MonitorFromWindow(im.hwnd, MONITOR_DEFAULTTONEAREST);
+        if (mon != im.monitor) {
+            im.monitor = mon;
+            im.vsyncEvery = 0;
+            MONITORINFOEXW mi{};
+            mi.cbSize = sizeof mi;
+            DEVMODEW dm{};
+            dm.dmSize = sizeof dm;
+            if (GetMonitorInfoW(mon, &mi) && EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) &&
+                dm.dmDisplayFrequency >= 50) {
+                const double hz = dm.dmDisplayFrequency;
+                const int n = static_cast<int>(std::lround(hz / 59.94));
+                if (n >= 1 && n <= 4 && std::fabs(hz / n - 59.94) < 1.0) im.vsyncEvery = n;
+            }
+        }
+        const int want = fastForward() ? 0 : im.vsyncEvery;
+        if (want != im.interval) {
+            im.swapInterval(want);
+            im.interval = want;
+        }
+    }
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
+    if (im.vsyncEvery && !fastForward()) {
+        // the swap has waited for the display; only note frames that took too long
+        const LONGLONG period = im.freq.QuadPart * 1001 / 60000;
+        const bool late = im.lastPace.QuadPart && now.QuadPart - im.lastPace.QuadPart > period * 3 / 2;
+        im.lastPace = now;
+        if (late) ++im.lateCount;
+        im.recentLate = (im.recentLate << 1) | (late ? 1u : 0u);
+        if (__builtin_popcount(im.recentLate) >= 3) im.lateFor = 90;
+        else if (im.lateFor > 0) --im.lateFor;
+        if (im.lateFor > 0) ++im.behindCount;
+        im.next = now;  // for when the timer takes over again
+        return;
+    }
+    im.lastPace.QuadPart = 0;
     if (!fastForward()) {
         // 59.94 Hz, 1% faster or slower to keep the sound queue in range
         LONGLONG period = impl_->freq.QuadPart * 1001 / 60000;

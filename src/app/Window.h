@@ -42,6 +42,10 @@ public:
     // A frame in which the picture did not change: handles window messages
     // and waits for the next frame time without drawing.
     bool idle();
+    // True when frames are timed by the display (vsync, a 60 or 120 Hz
+    // monitor): every frame should then be drawn, changed or not (idle()
+    // cannot wait for the display without drawing).
+    bool syncedToDisplay() const;
     bool fastForward() const;
     // Show the letterboxed 2:1 gameplay and movie picture without its black
     // bands, as wide as the window allows (menus stay 4:3).

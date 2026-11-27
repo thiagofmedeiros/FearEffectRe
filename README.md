@@ -60,21 +60,26 @@ The **Video** setting chooses how they are enlarged:
 - **AI upscale, fast**: a small Real-ESRGAN video model enlarges each picture 4x on the
   graphics card while you play.
 - **AI upscale, best**: the large Real-ESRGAN x4plus model. It takes about half a second per
-  picture, so the results are kept in an HD cache (`hdcache/hdcache.pack`) and reused.
+  picture, so the results are kept in an HD cache (`hdcache/hdcache.vpack`) and reused.
   **Build HD cache...** enlarges every movie and background frame of all four discs ahead of
-  time: several hours and about 300 GB of disk; it can be stopped and resumed. Pictures
-  missing from the cache are enlarged when first shown, which slows the game down.
+  time: several hours and a few GB of disk; it can be stopped and resumed. Pictures missing from the cache are
+  enlarged when first shown, which slows the game down (those are kept in `hdcache/hdcache.pack`).
 - **AI upscale, SeedVR2** (`seedvr2`): SeedVR2 3B, a video model: it enlarges frames in
   groups, so movies are steadier and cleaner than with x4plus. It is far too slow to run
-  while playing, so it only shows pictures from its own cache, `hdcache/seedvr2.pack`;
+  while playing, so it only shows pictures from its own cache, `hdcache/seedvr2.vpack`;
   anything missing is shown as on the console, never from another model. With SeedVR2
   selected, **Build HD cache...** (or `--build-seedvr2-cache`) builds it for every disc found
-  next to disc 1: about two days on an RTX 3090 and about 300 GB. Each disc is marked as
+  next to disc 1: about two days on an RTX 3090 and about 4 GB. Each disc is marked as
   done when it is complete; starting or inserting a disc that is not says so. SeedVR2 needs
   an NVIDIA graphics card; the launcher offers to install it in `ai/seedvr2` the first time
   it is chosen (see [tools/ai/README.md](tools/ai/README.md)).
 
-The AI modes need a DirectX 12 graphics card.
+The AI modes need a DirectX 12 graphics card. Both caches are stored as H.264 video (about
+a hundredth of the raw pictures' size), played with the decoder that comes with Windows;
+building them needs `ffmpeg.exe` in the `ai` folder or on the PATH. Caches from earlier
+versions (`hdcache.pack`, `seedvr2.pack`, raw pictures) are still read; building again
+encodes their pictures without enlarging them again, after which they can be deleted.
+`--check-hd-cache` decodes every picture of the caches and compares it with the raw one.
 
 | Original | AI upscale, best | AI upscale, SeedVR2 |
 |---|---|---|

@@ -75,9 +75,9 @@ endif()
 add_executable(FearEffectRe src/app/main.cpp src/app/ModernControls.cpp src/app/GameFixes.cpp src/app/SmoothFrames.cpp)
 if(WIN32)
     enable_language(RC)
-    target_sources(FearEffectRe PRIVATE src/app/FearEffectRe.rc src/app/GlRenderer.cpp src/app/CheatList.cpp src/app/Controls.cpp src/app/Window.cpp src/app/Launcher.cpp src/app/VideoAI.cpp src/app/StrVideo.cpp)
+    target_sources(FearEffectRe PRIVATE src/app/FearEffectRe.rc src/app/GlRenderer.cpp src/app/CheatList.cpp src/app/Controls.cpp src/app/Window.cpp src/app/Launcher.cpp src/app/VideoAI.cpp src/app/VideoPack.cpp src/app/StrVideo.cpp)
     target_include_directories(FearEffectRe PRIVATE third_party/onnxruntime/include)
-    target_link_libraries(FearEffectRe PRIVATE user32 gdi32 winmm comdlg32 comctl32 urlmon opengl32 ole32 windowscodecs)
+    target_link_libraries(FearEffectRe PRIVATE user32 gdi32 winmm comdlg32 comctl32 urlmon opengl32 ole32 windowscodecs mfplat mfuuid)
     # AI upscaling: a folder holding onnxruntime.dll, DirectML.dll, fast_x4.onnx and
     # best_x4.onnx (see tools/ai/README.md) is copied next to the program as `ai`.
     set(FE_AI_DIR "" CACHE PATH "Folder with the ONNX Runtime/DirectML DLLs and the upscaling models")

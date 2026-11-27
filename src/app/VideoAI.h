@@ -33,6 +33,15 @@ std::shared_ptr<fe::VideoUpscaler> createAiUpscaler(VideoMode mode, const std::f
 int buildHdCache(const std::vector<std::string>& discs, const std::filesystem::path& aiDir,
                  const std::filesystem::path& cacheDir);
 
+// Encodes the pictures of the raw caches from earlier versions (hdcache.pack,
+// seedvr2.pack) that are not in the H.264 caches yet. Returns an exit code.
+int convertHdCache(const std::filesystem::path& aiDir, const std::filesystem::path& cacheDir);
+
+// Decodes every picture of the H.264 caches (in order, then a sample in
+// random order, which makes it seek) and compares it with the raw picture of the old cache when
+// that has it. Returns an exit code.
+int checkHdCache(const std::filesystem::path& cacheDir);
+
 // True when the SeedVR2 cache was built completely for the disc with this
 // volume name (DiscImage::volumeId(), e.g. "SLUS-00920").
 bool seedvr2DiscReady(const std::filesystem::path& cacheDir, const std::string& volumeId);

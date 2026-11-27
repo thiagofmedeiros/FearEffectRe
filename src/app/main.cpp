@@ -269,7 +269,9 @@ int usage() {
                  "--analog: a DualShock in analog mode (the game reads the left stick; also in FearEffectRe.ini),\n"
                  "--modern: the stick or D-pad moves the character in that direction on screen (no tank controls),\n"
                  "--build-hd-cache enlarges every movie and background frame of all discs into the HD cache (hours),\n"
-                 "--build-seedvr2-cache does the same with SeedVR2 for --video seedvr2 (days).\n"
+                 "--build-seedvr2-cache does the same with SeedVR2 for --video seedvr2 (days),\n"
+                 "--check-hd-cache decodes every picture of the HD caches and compares it with the old raw cache,\n"
+                 "--convert-hd-cache encodes the pictures of the old raw caches (*.pack) into the H.264 ones.\n"
                  "Save states: F6 saves, F7 loads, F8 / Shift+F8 change the slot (1-9), kept in ./states\n"
                  "(--states dir). --load-state FILE starts from a state, --save-state-at / --load-state-at FRAME:FILE\n"
                  "write or load one while running.\n"
@@ -324,7 +326,7 @@ int main(int argc, char** argv) {
     if (argc < 2) return usage();
 #endif
     if (!viaLauncher) discPath = argv[1];
-    bool buildHdCache = false, buildSeedvr2 = false;
+    bool buildHdCache = false, buildSeedvr2 = false, checkHdCache = false, convertCache = false;
     std::string exportVideo, exportDir;  // --export-video FILE DIR: a movie's frames as PPM pictures
     unsigned frames = 0;  // 0 = play in a window until it is closed
     size_t maxLog = 80;
@@ -391,6 +393,8 @@ int main(int argc, char** argv) {
         else if (a == "--log-cd" && i + 1 < argc) logCd = std::atoi(argv[++i]);
         else if (a == "--build-hd-cache") buildHdCache = true;
         else if (a == "--build-seedvr2-cache") buildSeedvr2 = true;
+        else if (a == "--check-hd-cache") checkHdCache = true;
+        else if (a == "--convert-hd-cache") convertCache = true;
         else if (a == "--export-video" && i + 2 < argc) {
             exportVideo = argv[++i];
             exportDir = argv[++i];
@@ -439,6 +443,17 @@ int main(int argc, char** argv) {
             [](std::uint64_t, std::uint64_t) {}, exportVideo);
         std::printf("export  %d frames of %s written to %s (%d not decoded)\n", n, exportVideo.c_str(), exportDir.c_str(), failed);
         return 0;
+    }
+    if (convertCache) {
+        wchar_t exePath[MAX_PATH];
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        const auto dir = std::filesystem::path(exePath).parent_path();
+        return app::convertHdCache(dir / "ai", dir / "hdcache");
+    }
+    if (checkHdCache) {
+        wchar_t exePath[MAX_PATH];
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        return app::checkHdCache(std::filesystem::path(exePath).parent_path() / "hdcache");
     }
     if (buildHdCache || buildSeedvr2) {
         // every disc of the set that is found next to the given one
@@ -822,7 +837,8 @@ int main(int argc, char** argv) {
                 bool open;
                 // the game draws 30 or fewer pictures a second: nothing to show when the GPU was idle
                 fe::u64 activity = m.gp0Words + m.gp1Words;
-                bool changed = activity != lastActivity || (m.frame & 63) == 0;
+                // (timed by the display: every frame is drawn, the swap is the wait)
+                bool changed = activity != lastActivity || (m.frame & 63) == 0 || (gl && window->syncedToDisplay());
                 lastActivity = activity;
                 int ax, ay, aw, ah;
                 auto showGl = [](void* ctx, int x, int y, int w, int h, int vx, int vy, int vw, int vh, bool key) {

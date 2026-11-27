@@ -26,6 +26,13 @@ Then configure with `-DFE_AI_DIR=<ai folder>` so the build copies it next to the
 `onnxruntime_c_api.h` in `third_party/onnxruntime` is from the same ONNX Runtime package
 (MIT licence). Real-ESRGAN is BSD-3-Clause.
 
+## ffmpeg (for building the HD caches)
+
+The cache builders store the enlarged pictures as H.264 (x264, quality 18, a keyframe
+every 30 frames, BT.709) in chunks of up to 300 frames, encoded by `ffmpeg.exe` from the
+`ai` folder or the PATH, e.g. a "essentials" build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/).
+Playing needs only Windows' own H.264 decoder (Windows N editions: the Media Feature Pack).
+
 ## SeedVR2 (optional, for the SeedVR2 video mode)
 
 The launcher installs SeedVR2 the first time it is chosen (after asking): it runs
@@ -37,7 +44,8 @@ finish an interrupted installation:
     powershell -NoProfile -ExecutionPolicy Bypass -File ai\setup_seedvr2.ps1 -Dir ai\seedvr2
 
 The SeedVR2 cache builder runs `seedvr2_chunk.py` (copied into `ai` by the build) with
-the Python in `ai/seedvr2/venv`, on chunks of up to 300 frames. `ai/seedvr2` holds:
+the Python in `ai/seedvr2/venv`, on chunks of up to 300 frames; it writes the enlarged
+frames to a raw file that the builder then encodes into `hdcache/seedvr2.vpack`. `ai/seedvr2` holds:
 
 | Folder | Contents |
 |---|---|

@@ -206,12 +206,12 @@ LRESULT CALLBACK proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     }
                     const wchar_t* text =
                         seedvr ? L"This decodes every movie and background frame on all four discs found next to "
-                                 L"disc 1 and enlarges them with SeedVR2, as video, into the file hdcache/seedvr2.pack.\n\n"
-                                 L"It takes about two days on an RTX 3090 class graphics card and about 300 GB of disk "
+                                 L"disc 1 and enlarges them with SeedVR2, as video, into the file hdcache/seedvr2.vpack.\n\n"
+                                 L"It takes about two days on an RTX 3090 class graphics card and about 4 GB of disk "
                                  L"space. It can be stopped by closing its window and resumed later.\n\nStart now?"
                                : L"This decodes every movie and background frame on all four discs found next to "
-                                 L"disc 1 and enlarges each with the best AI model into the file hdcache/hdcache.pack.\n\n"
-                                 L"It takes several hours on a fast graphics card and needs about 300 GB of disk "
+                                 L"disc 1 and enlarges each with the best AI model into the file hdcache/hdcache.vpack.\n\n"
+                                 L"It takes several hours on a fast graphics card and needs a few GB of disk "
                                  L"space. It can be stopped by closing its window and resumed later.\n\nStart now?";
                     if (MessageBoxW(hwnd, text, seedvr ? L"Build SeedVR2 HD cache" : L"Build HD cache",
                                     MB_OKCANCEL | MB_ICONINFORMATION) != IDOK)

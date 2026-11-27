@@ -1,21 +1,20 @@
-"""Enlarge one chunk of movie frames with SeedVR2 and add them to the HD cache.
+"""Enlarge one chunk of movie frames with SeedVR2 for the HD cache.
 
 Run by FearEffectRe --build-seedvr2-cache, once per chunk:
 
-    python seedvr2_chunk.py <chunk dir> <pack file> <seedvr2 dir>
+    python seedvr2_chunk.py <chunk dir> <result file> <seedvr2 dir>
 
 <chunk dir> holds the frames in order as 00000.ppm, 00001.ppm, ... (320x160
 as decoded from the disc) and hashes.txt, one 16-digit hex picture hash per
 line in the same order. <seedvr2 dir> holds `repo` (ComfyUI-SeedVR2_VideoUpscaler)
 and `models`. The frames are packed into a lossless video so SeedVR2 treats
-them as a sequence (steadier than frame by frame), enlarged 4x, and each
-result is appended to <pack file> as an "FEHR" record: the tag, the hash
-(8 bytes), the size (4 bytes) and raw RGB, the same format the game reads.
-Exit code 0 when every frame was added.
+them as a sequence (steadier than frame by frame), enlarged 4x, and written
+to <result file> one after the other as raw RGB, in the same order; the game
+then encodes them as H.264 into hdcache/seedvr2.vpack.
+Exit code 0 when every frame was written.
 """
 import glob
 import os
-import struct
 import subprocess
 import sys
 
@@ -24,7 +23,7 @@ import numpy as np
 
 
 def main() -> int:
-    chunk, pack, seedvr = sys.argv[1], sys.argv[2], sys.argv[3]
+    chunk, result, seedvr = sys.argv[1], sys.argv[2], sys.argv[3]
     frames = sorted(glob.glob(os.path.join(chunk, '*.ppm')))
     with open(os.path.join(chunk, 'hashes.txt')) as f:
         hashes = [int(line, 16) for line in f.read().split()]
@@ -60,14 +59,14 @@ def main() -> int:
     if len(pngs) != len(frames):
         print(f'seedvr2: expected {len(frames)} pictures, got {len(pngs)}', flush=True)
         return 1
-    with open(pack, 'ab') as p:
-        for path, hsh in zip(pngs, hashes):
+    with open(result, 'wb') as p:
+        for path in pngs:
             img = cv2.imread(path)
             if img is None or img.shape[0] != h * 4 or img.shape[1] != w * 4:
                 print('seedvr2: unexpected picture ' + path, flush=True)
                 return 1
             rgb = np.ascontiguousarray(img[:, :, ::-1]).tobytes()
-            p.write(b'FEHR' + struct.pack('<QI', hsh, len(rgb)) + rgb)
+            p.write(rgb)
     return 0
 
 
