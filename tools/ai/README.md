@@ -30,7 +30,9 @@ Then configure with `-DFE_AI_DIR=<ai folder>` so the build copies it next to the
 
 The cache builders store the enlarged pictures as H.264 (x264, quality 18, a keyframe
 every 30 frames, BT.709) in chunks of up to 300 frames, encoded by `ffmpeg.exe` from the
-`ai` folder or the PATH, e.g. a "essentials" build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/).
+`ai` folder or the PATH. When there is none, the builder downloads the "essentials" release
+build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) (about 90 MB, GPL, with x264) and
+keeps its `ffmpeg.exe` in `ai`. It is not shipped with the program.
 Playing needs only Windows' own H.264 decoder (Windows N editions: the Media Feature Pack).
 
 ## SeedVR2 (optional, for the SeedVR2 video mode)

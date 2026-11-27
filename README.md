@@ -76,7 +76,8 @@ The **Video** setting chooses how they are enlarged:
 
 The AI modes need a DirectX 12 graphics card. Both caches are stored as H.264 video (about
 a hundredth of the raw pictures' size), played with the decoder that comes with Windows;
-building them needs `ffmpeg.exe` in the `ai` folder or on the PATH. Caches from earlier
+building them needs `ffmpeg.exe`, taken from the `ai` folder or the PATH, or else downloaded
+into `ai` the first time. Caches from earlier
 versions (`hdcache.pack`, `seedvr2.pack`, raw pictures) are still read; building again
 encodes their pictures without enlarging them again, after which they can be deleted.
 `--check-hd-cache` decodes every picture of the caches and compares it with the raw one.

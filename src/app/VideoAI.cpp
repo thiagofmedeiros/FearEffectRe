@@ -6,6 +6,7 @@
 #endif
 #include <windows.h>
 #include <wincodec.h>
+#include <urlmon.h>
 
 #include <algorithm>
 #include <chrono>
@@ -614,12 +615,55 @@ bool openDisc(const std::string& path, std::unique_ptr<fe::DiscImage>& disc, con
     }
 }
 
+// Runs a program and waits for it; true when it exits with 0.
+bool runAndWait(std::wstring cmd) {
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) return false;
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return code == 0;
+}
+
+// ffmpeg is only needed to build the caches (the game decodes with Windows'
+// own H.264 decoder). When it is neither in the ai folder nor on the PATH,
+// the "essentials" build from gyan.dev (with x264) is downloaded and its
+// ffmpeg.exe kept in the ai folder.
 fs::path needFfmpeg(const fs::path& aiDir, const char* tag) {
     fs::path ffmpeg = VideoChunkWriter::findFfmpeg(aiDir);
-    if (ffmpeg.empty())
-        std::printf("%s cannot start: the cache is stored as H.264 video, encoded by ffmpeg.exe; put it in %s or on the PATH\n",
-                    tag, aiDir.string().c_str());
-    return ffmpeg;
+    if (!ffmpeg.empty()) return ffmpeg;
+    const wchar_t* url = L"https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
+    std::printf("%s ffmpeg.exe (needed to encode the cache as H.264) is not in %s or on the PATH: downloading it (about 90 MB)\n",
+                tag, aiDir.string().c_str());
+    std::fflush(stdout);
+    std::error_code ec;
+    const fs::path tmp = aiDir / L"ffmpeg-download";
+    fs::remove_all(tmp, ec);
+    fs::create_directories(tmp, ec);
+    const fs::path zip = tmp / L"ffmpeg.zip";
+    wchar_t tar[MAX_PATH];
+    GetSystemDirectoryW(tar, MAX_PATH);
+    const std::wstring tarExe = std::wstring(tar) + L"\\tar.exe";  // in Windows 10 and later; reads zip files
+    if (SUCCEEDED(URLDownloadToFileW(nullptr, url, zip.c_str(), 0, nullptr)) &&
+        runAndWait(L"\"" + tarExe + L"\" -xf \"" + zip.wstring() + L"\" -C \"" + tmp.wstring() + L"\"")) {
+        for (auto it = fs::recursive_directory_iterator(tmp, ec); !ec && it != fs::recursive_directory_iterator(); it.increment(ec))
+            if (it->path().filename() == L"ffmpeg.exe") {
+                fs::copy_file(it->path(), aiDir / L"ffmpeg.exe", fs::copy_options::overwrite_existing, ec);
+                break;
+            }
+    }
+    fs::remove_all(tmp, ec);
+    if (fs::exists(aiDir / L"ffmpeg.exe", ec)) {
+        std::printf("%s ffmpeg.exe downloaded into %s\n", tag, aiDir.string().c_str());
+        return aiDir / L"ffmpeg.exe";
+    }
+    std::printf("%s cannot start: downloading ffmpeg failed; put ffmpeg.exe in %s or on the PATH (see tools/ai/README.md)\n",
+                tag, aiDir.string().c_str());
+    return {};
 }
 
 constexpr size_t kChunkFrames = 300;  // pictures per H.264 chunk at most
