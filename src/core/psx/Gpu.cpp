@@ -1,6 +1,7 @@
 #include "Gpu.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
@@ -19,10 +20,17 @@ int clamp255(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
 // Worker threads for large high-resolution triangles: the rows are split
 // into bands, one per thread. Bands write disjoint rows and only read video
 // memory, so they do not need to synchronise with each other.
+//
+// A frame hands the workers hundreds of triangles in quick succession, so
+// they wait for the next one spinning for a while (a fraction of a
+// millisecond) before they go to sleep: waking a sleeping thread costs tens
+// of microseconds, more than drawing a middle-sized triangle.
 class RowPool {
 public:
-    RowPool() {
-        unsigned n = std::thread::hardware_concurrency();
+    // `divide`: use this part of the processor's threads (the pool for the
+    // in-between frames takes half, the game's the rest)
+    explicit RowPool(unsigned divide = 1) {
+        unsigned n = std::thread::hardware_concurrency() / divide;
         count_ = static_cast<int>(std::clamp(n, 1u, 12u));
         for (int i = 1; i < count_; ++i) threads_.emplace_back([this, i] { work(i); });
     }
@@ -30,7 +38,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             quit_ = true;
-            ++generation_;
+            generation_.fetch_add(1);
         }
         wake_.notify_all();
         for (auto& t : threads_) t.join();
@@ -38,56 +46,85 @@ public:
     int bands() const { return count_; }
     // Calls job(band) for band 0..bands()-1 and returns when all are done.
     void run(const std::function<void(int)>& job) {
+        job_ = &job;
+        pending_.store(count_ - 1);
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            job_ = &job;
-            pending_ = count_ - 1;
-            ++generation_;
+            generation_.fetch_add(1);
         }
-        wake_.notify_all();
+        if (sleepers_.load()) wake_.notify_all();
         job(0);
-        std::unique_lock<std::mutex> lock(mutex_);
-        done_.wait(lock, [this] { return pending_ == 0; });
+        while (pending_.load() != 0) spinPause();
     }
 
 private:
+    static void spinPause() {
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
+        __builtin_ia32_pause();
+#endif
+    }
     void work(int band) {
         unsigned seen = 0;
         for (;;) {
-            const std::function<void(int)>* job;
-            {
+            // spin a little while for the next job, then sleep
+            unsigned g = generation_.load();
+            for (int i = 0; g == seen && i < 20000; ++i) {
+                spinPause();
+                g = generation_.load();
+            }
+            if (g == seen) {
                 std::unique_lock<std::mutex> lock(mutex_);
-                wake_.wait(lock, [&] { return generation_ != seen; });
-                seen = generation_;
-                if (quit_) return;
-                job = job_;
+                sleepers_.fetch_add(1);
+                wake_.wait(lock, [&] { return generation_.load() != seen; });
+                sleepers_.fetch_sub(1);
+                g = generation_.load();
             }
-            (*job)(band);
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                --pending_;
-            }
-            done_.notify_one();
+            seen = g;
+            if (quit_) return;
+            (*job_)(band);
+            pending_.fetch_sub(1);
         }
     }
     std::vector<std::thread> threads_;
     std::mutex mutex_;
-    std::condition_variable wake_, done_;
-    const std::function<void(int)>* job_ = nullptr;
-    unsigned generation_ = 0;
-    int pending_ = 0, count_ = 1;
-    bool quit_ = false;
+    std::condition_variable wake_;
+    const std::function<void(int)>* volatile job_ = nullptr;
+    std::atomic<unsigned> generation_{0};
+    std::atomic<int> pending_{0}, sleepers_{0};
+    int count_ = 1;
+    volatile bool quit_ = false;
 };
 
 // Below this many output pixels a primitive is drawn on the calling thread:
 // waking the workers would cost more than it saves.
-constexpr s64 kParallelPixels = 40000;
+constexpr s64 kParallelPixels = 8000;
 
-RowPool& rowPool() {
+// The in-between frames (60 fps) are drawn on a thread of their own, at the
+// same time as the game's: that Gpu has its own workers.
+RowPool& rowPool(bool second = false) {
     static RowPool pool;
+    if (second) {
+        static RowPool other(2);
+        return other;
+    }
     return pool;
 }
 }  // namespace
+
+void Gpu::copyHiresTo(Gpu& to, int x1, int y1, int x2, int y2) const {
+    const int S = scale;
+    const size_t w = static_cast<size_t>(x2 - x1 + 1) * S, stride = static_cast<size_t>(1024) * S;
+    const int rows = (y2 - y1 + 1) * S;
+    const size_t start = static_cast<size_t>(y1) * S * stride + static_cast<size_t>(x1) * S;
+    const u16* const from = hires.data() + start;
+    u16* const into = to.hires.data() + start;
+    RowPool& pool = rowPool(ghost);
+    const int n = pool.bands();
+    pool.run([&](int band) {
+        for (int r = rows * band / n; r < rows * (band + 1) / n; ++r)
+            std::memcpy(into + static_cast<size_t>(r) * stride, from + static_cast<size_t>(r) * stride, w * sizeof(u16));
+    });
+}
 
 void Gpu::setScale(int factor) {
     scale = std::clamp(factor, 1, 16);
@@ -99,6 +136,66 @@ void Gpu::setScale(int factor) {
     fbX2 = fbY2 = -1;
     growFrameBuffer(areaX1, areaY1, areaX2, areaY2);
     trackDisplay();
+}
+
+void Gpu::setBackend(HiresBackend* backend) {
+    hw = backend;
+    if (hw) {
+        // the picture lives on the graphics card
+        hires.clear();
+        hires.shrink_to_fit();
+        fbX1 = 1024;
+        fbY1 = 512;
+        fbX2 = fbY2 = -1;
+    }
+}
+
+HwState Gpu::hwState(bool textured, bool semi, bool raw) const {
+    HwState s;
+    s.textured = textured;
+    s.semi = semi;
+    s.raw = raw;
+    s.blend = blend;
+    s.depth = depth;
+    s.tpx = tpx;
+    s.tpy = tpy;
+    s.clutX = clutX;
+    s.clutY = clutY;
+    s.twMaskX = twMaskX;
+    s.twMaskY = twMaskY;
+    s.twOffX = twOffX;
+    s.twOffY = twOffY;
+    s.setMask = setMask != 0;
+    s.areaX1 = areaX1;
+    s.areaY1 = areaY1;
+    s.areaX2 = areaX2;
+    s.areaY2 = areaY2;
+    return s;
+}
+
+void Gpu::toBackend(const Vertex& a, const Vertex& b, const Vertex& c, bool textured, bool semi, bool raw) {
+    if (std::max({a.x, b.x, c.x}) - std::min({a.x, b.x, c.x}) > 1023) return;
+    if (std::max({a.y, b.y, c.y}) - std::min({a.y, b.y, c.y}) > 511) return;
+    HwVertex v[3];
+    const Vertex* src[3] = {&a, &b, &c};
+    for (int k = 0; k < 3; ++k) {
+        const Vertex& s = *src[k];
+        const bool precise = s.hx != kNoPrecise;
+        v[k].x = precise ? s.fx : static_cast<float>(s.x);
+        v[k].y = precise ? s.fy : static_cast<float>(s.y);
+        v[k].w = 1.0f;  // textures spread across the screen as the console draws them
+        v[k].r = static_cast<u8>(s.r);
+        v[k].g = static_cast<u8>(s.g);
+        v[k].b = static_cast<u8>(s.b);
+        v[k].pad = 0;
+        v[k].u = static_cast<float>(s.u);
+        v[k].v = static_cast<float>(s.v);
+    }
+    // 15-bit textures (movies, backgrounds) are enlarged first when they are AI-upscaled
+    if (textured && depth >= 2 && !videoDirty.empty()) videoFlush(tpx, tpy, tpx + 255, tpy + 255);
+    HwState st = hwState(textured, semi, raw);
+    st.precise = a.hx != kNoPrecise || b.hx != kNoPrecise || c.hx != kNoPrecise;
+    hw->triangle(v, st);
 }
 
 void Gpu::setUpscaler(std::shared_ptr<VideoUpscaler> u) {
@@ -217,7 +314,7 @@ void Gpu::videoFlush(int tx1, int ty1, int tx2, int ty2) {
                                                 static_cast<size_t>(nx) * S + static_cast<size_t>(x % S), y1};
             }
             auto job = [&](int band) {
-                const int bands = rowPool().bands();
+                const int bands = rowPool(ghost).bands();
                 for (int y = oh * band / bands; y < oh * (band + 1) / bands; ++y) {
                     const int sy = ((2 * y + 1) * K * 128) / S - 128;
                     const int r0 = std::clamp(sy >> 8, 0, ih - 1), r1 = std::min(r0 + 1, ih - 1), fy = sy < 0 ? 0 : sy & 255;
@@ -235,24 +332,30 @@ void Gpu::videoFlush(int tx1, int ty1, int tx2, int ty2) {
                     }
                 }
             };
-            rowPool().run(job);
+            rowPool(ghost).run(job);
         }
-        for (const VideoRect& r : slices)
+        for (const VideoRect& r : slices) {
             for (int y = r.y1; y <= r.y2; ++y)
                 for (int x = r.x1; x <= r.x2; ++x) {
                     u8& st = videoState[static_cast<size_t>(y) * 1024 + x];
                     if (st == 1) st = ok ? 2 : 0;
                 }
+            if (ok && hw) {
+                const size_t vs = static_cast<size_t>(1024) * scale;
+                hw->uploadHires(r.x1, r.y1, r.x2 - r.x1 + 1, r.y2 - r.y1 + 1,
+                                &video[static_cast<size_t>(r.y1) * scale * vs + static_cast<size_t>(r.x1) * scale], vs);
+            }
+        }
     }
 }
 
 bool Gpu::videoTexel(s64 x, s64 y, u16& out) const {
     const int nx = static_cast<int>(x >> 16) & 1023, ny = static_cast<int>(y >> 16) & 511;
-    if (videoState[static_cast<size_t>(ny) * 1024 + nx] != 2) return false;
+    if (videoStates()[static_cast<size_t>(ny) * 1024 + nx] != 2) return false;
     // `video` is already at the render scale: the nearest of its pixels
     const int hx = std::min(static_cast<int>((x * scale) >> 16), 1024 * scale - 1);
     const int hy = std::min(static_cast<int>((y * scale) >> 16), 512 * scale - 1);
-    out = video[static_cast<size_t>(hy) * 1024 * scale + hx];
+    out = videoPixels()[static_cast<size_t>(hy) * 1024 * scale + hx];
     return true;
 }
 
@@ -289,7 +392,7 @@ void Gpu::growFrameBuffer(int x1, int y1, int x2, int y2) {
     x2 = std::clamp(x2, 0, 1023);
     y1 = std::clamp(y1, 0, 511);
     y2 = std::clamp(y2, 0, 511);
-    if (scale == 1 || x1 > x2 || y1 > y2) return;
+    if (scale == 1 || x1 > x2 || y1 > y2 || hires.empty()) return;
     if (x1 >= fbX1 && x2 <= fbX2 && y1 >= fbY1 && y2 <= fbY2) return;
     int nx1 = std::min(fbX1, x1), ny1 = std::min(fbY1, y1), nx2 = std::max(fbX2, x2), ny2 = std::max(fbY2, y2);
     // bring the newly covered part up to date from video memory
@@ -382,7 +485,7 @@ void Gpu::triangleHi(Vertex a, Vertex b, Vertex c, bool textured, bool gouraud, 
     const size_t stride = static_cast<size_t>(1024) * S;
 
     if (direct && !videoDirty.empty()) videoFlush(tpx, tpy, tpx + 255, tpy + 255);
-    const bool vid = direct && !videoState.empty();
+    const bool vid = direct && !videoStates().empty();
 
     // The columns of row y inside all three edges: each edge value is linear
     // in x, so its sign changes at most once along the row. Only that span is
@@ -496,7 +599,7 @@ void Gpu::triangleHi(Vertex a, Vertex b, Vertex c, bool textured, bool gouraud, 
     };
 
     const s64 pixels = static_cast<s64>(maxX - minX + 1) * (maxY - minY + 1);
-    RowPool& pool = rowPool();
+    RowPool& pool = rowPool(ghost);
     if (pixels < kParallelPixels || pool.bands() == 1) {
         rows(minY, maxY, 1);
         return;
@@ -514,7 +617,7 @@ void Gpu::rectHi(int x, int y, int w, int h, int u0, int v0, int r, int g, int b
     int x0 = std::max(x, areaX1), x1 = std::min(x + w - 1, areaX2);
     const bool neutral = r == 0x80 && g == 0x80 && b == 0x80;
     const bool vid = textured && depth >= 2 && (raw || neutral) && !semi && !checkMask && !twMaskX && !twMaskY &&
-                     !videoState.empty();
+                     !videoStates().empty();
     if (vid && !videoDirty.empty()) videoFlush(tpx, tpy, tpx + 255, tpy + 255);
     if (vid) {
         // a 15-bit texture drawn unchanged: rows of the enlarged sprite in parallel
@@ -522,7 +625,7 @@ void Gpu::rectHi(int x, int y, int w, int h, int u0, int v0, int r, int g, int b
         const size_t stride = static_cast<size_t>(1024) * S;
         const int rows = (y1 - y0 + 1) * S;
         auto job = [&](int band) {
-            const int bands = rowPool().bands();
+            const int bands = rowPool(ghost).bands();
             for (int r = rows * band / bands; r < rows * (band + 1) / bands; ++r) {
                 const int py = y0 + r / S, j = r % S;
                 const int tv = (tpy + ((v0 + (py - y)) & 255)) & 511;
@@ -533,7 +636,7 @@ void Gpu::rectHi(int x, int y, int w, int h, int u0, int v0, int r, int g, int b
                     const u16 t = vram[static_cast<size_t>(tv) * 1024 + tu];
                     if (!t) continue;
                     u16* out = row + static_cast<size_t>(px) * S;
-                    if (videoState[static_cast<size_t>(tv) * 1024 + tu] != 2) {
+                    if (videoStates()[static_cast<size_t>(tv) * 1024 + tu] != 2) {
                         for (int i = 0; i < S; ++i) out[i] = t | setMask;
                         continue;
                     }
@@ -545,9 +648,9 @@ void Gpu::rectHi(int x, int y, int w, int h, int u0, int v0, int r, int g, int b
                 }
             }
         };
-        if (rows * (x1 - x0 + 1) * S >= 4096) rowPool().run(job);
+        if (rows * (x1 - x0 + 1) * S >= 4096) rowPool(ghost).run(job);
         else
-            for (int band = 0; band < rowPool().bands(); ++band) job(band);
+            for (int band = 0; band < rowPool(ghost).bands(); ++band) job(band);
         return;
     }
     if (y0 > y1 || x0 > x1) return;
@@ -577,7 +680,7 @@ void Gpu::rectHi(int x, int y, int w, int h, int u0, int v0, int r, int g, int b
         }
     };
     const int total = y1 - y0 + 1;
-    RowPool& pool = rowPool();
+    RowPool& pool = rowPool(ghost);
     if (static_cast<s64>(total) * (x1 - x0 + 1) * S * S < kParallelPixels || pool.bands() == 1 || total < 2) {
         body(y0, y1);
         return;
@@ -590,7 +693,18 @@ void Gpu::rectHi(int x, int y, int w, int h, int u0, int v0, int r, int g, int b
     });
 }
 
+bool Gpu::displayArea(int& x, int& y, int& width, int& height) const {
+    if (displayMode & 0x10) return false;
+    static const int widths[4] = {256, 320, 512, 640};
+    width = std::min((displayMode & 0x40) ? 368 : widths[displayMode & 3], 1024 - dispX);
+    height = std::min((displayMode & 0x24) == 0x24 ? 480 : 240, 512 - dispY);
+    x = dispX;
+    y = dispY;
+    return true;
+}
+
 bool Gpu::frame(const u16*& pixels, int& stride, int& x, int& y, int& width, int& height) const {
+    if (scale > 1 && hires.empty()) return false;  // drawn by the backend
     if (displayMode & 0x10) return false;
     static const int widths[4] = {256, 320, 512, 640};
     int w = (displayMode & 0x40) ? 368 : widths[displayMode & 3];
@@ -731,6 +845,7 @@ void Gpu::polygon() {
     bool gouraud = op & 0x10, quad = op & 0x08, textured = op & 0x04, semi = op & 0x02, raw = op & 0x01;
     int n = quad ? 4 : 3;
     Vertex v[4]{};
+    bool fromGte[4] = {};  // the vertex came from the geometry engine: a 3D polygon
     size_t i = 0;
     u32 color = cmd[0];
     for (int k = 0; k < n; ++k) {
@@ -743,25 +858,44 @@ void Gpu::polygon() {
         u32 xy = cmd[i++];
         v[k].x = sext11(xy) + offX;
         v[k].y = sext11(xy >> 16) + offY;
-        // All vertices that round to the same native pixel in a frame share
-        // one precise position: the first one drawn there. A model is built
-        // from parts transformed one by one, so where two parts meet the same
-        // point is computed twice with slightly different results; rounded
-        // they landed on one pixel, precise they would leave a crack.
+        // Where two parts of a model meet, the same point is computed twice
+        // (each part is transformed on its own): in the game's frame both land
+        // on one whole pixel, but moved separately (to halfway positions)
+        // they would leave a crack. So every vertex on the same whole pixel
+        // takes the position of the first one drawn there this frame.
         const u32 key = (static_cast<u32>(v[k].x) & 0xFFFF) | (static_cast<u32>(v[k].y) << 16);
         const bool hasPrecise = at < cmdPrecise.size() && !std::isnan(cmdPrecise[at][0]);
-        if (hasPrecise || !preciseCache.empty()) {
+        fromGte[k] = hasPrecise;
+        if (renderPrecise && (hasPrecise || !preciseCache.empty())) {
             auto it = preciseCache.find(key);
-            if (it != preciseCache.end() && it->second.frame + 1 >= frameTag) {
-                v[k].hx = it->second.x;
-                v[k].hy = it->second.y;
+            const bool cached = it != preciseCache.end() && it->second.frame + 1 >= frameTag;
+            // (only frames in between are drawn at such positions: there every
+            // vertex on the same whole pixel of the game's frame is one point)
+            const bool same = cached;
+            if (same) {
+                v[k].fx = it->second.x;
+                v[k].fy = it->second.y;
+                v[k].fz = it->second.z;
+                v[k].hx = 0;  // marks it precise
                 if (hasPrecise) ++preciseVertices;
+            } else if (hasPrecise && cached) {
+                v[k].fx = cmdPrecise[at][0] + offX;
+                v[k].fy = cmdPrecise[at][1] + offY;
+                v[k].fz = cmdPrecise[at][2];
+                v[k].hx = 0;
+                ++preciseVertices;
             } else if (hasPrecise) {
-                v[k].hx = static_cast<int>(std::lround((cmdPrecise[at][0] + offX) * scale));
-                v[k].hy = static_cast<int>(std::lround((cmdPrecise[at][1] + offY) * scale));
+                v[k].fx = cmdPrecise[at][0] + offX;
+                v[k].fy = cmdPrecise[at][1] + offY;
+                v[k].fz = cmdPrecise[at][2];
+                v[k].hx = 0;
                 ++preciseVertices;
                 if (preciseCache.size() > 65536) preciseCache.clear();
-                preciseCache[key] = {v[k].hx, v[k].hy, frameTag};
+                preciseCache[key] = {v[k].fx, v[k].fy, v[k].fz, frameTag};
+            }
+            if (v[k].hx != kNoPrecise) {
+                v[k].hx = static_cast<int>(std::lround(v[k].fx * scale));
+                v[k].hy = static_cast<int>(std::lround(v[k].fy * scale));
             }
         }
         if (textured) {
@@ -776,32 +910,44 @@ void Gpu::polygon() {
             }
         }
     }
-    if (recordPasses && !passes.empty() && !passes.back().snapped && !passes.back().done && scale > 1) {
+    if (recordPasses && !passes.empty() && !passes.back()->snapped && !passes.back()->done && scale > 1) {
         bool is3d = false;
-        for (int k = 0; k < n; ++k) is3d = is3d || v[k].hx != kNoPrecise;
+        for (int k = 0; k < n; ++k) is3d = is3d || fromGte[k];
         if (is3d) {
-            Pass& pass = passes.back();
+            Pass& pass = current();
             const int S = scale, x1 = std::max(pass.x1, 0), y1 = std::max(pass.y1, 0);
             const int x2 = std::min(pass.x2, 1023), y2 = std::min(pass.y2, 511);
-            if (x2 >= x1 && y2 >= y1) {
-                const size_t w = static_cast<size_t>(x2 - x1 + 1) * S, stride = static_cast<size_t>(1024) * S;
-                pass.pixels.resize(w * static_cast<size_t>(y2 - y1 + 1) * S);
-                for (int y = y1 * S; y < (y2 + 1) * S; ++y)
-                    std::copy_n(&hires[static_cast<size_t>(y) * stride + static_cast<size_t>(x1) * S], w,
-                                &pass.pixels[static_cast<size_t>(y - y1 * S) * w]);
+            if (x2 >= x1 && y2 >= y1 && snapshotTo && snapshotTo->scale == S) {
+                // into the other Gpu's picture, at the same place: the two
+                // buffers the game alternates between do not overlap there
+                if (beforeSnapshot) beforeSnapshot(pass.y1);  // it may still be drawing an in-between frame there
+                if (hw) hw->snapshot(x1, y1, x2, y2);  // on the graphics card
+                else copyHiresTo(*snapshotTo, x1, y1, x2, y2);
+                pass.serial = ++passSerial;
+                snapshotHeld[pass.y1 & 511] = pass.serial;
                 pass.regs = saveRegs();
                 pass.snapped = true;
                 // this command's words came before the snapshot: they start the record
                 for (size_t i = 0; i < cmd.size(); ++i)
-                    recordWord(cmd[i], i < cmdPrecise.size() ? cmdPrecise[i][0] : kNan, i < cmdPrecise.size() ? cmdPrecise[i][1] : kNan);
+                    recordWord(cmd[i], i < cmdPrecise.size() ? cmdPrecise[i][0] : kNan, i < cmdPrecise.size() ? cmdPrecise[i][1] : kNan,
+                               i < cmdPrecise.size() ? cmdPrecise[i][2] : 0);
             }
         }
     }
     if (!ghost) {
         triangle(v[0], v[1], v[2], textured, gouraud, semi, raw);
         if (quad) triangle(v[1], v[2], v[3], textured, gouraud, semi, raw);
+        int y1 = v[0].y, y2 = v[0].y;
+        for (int k = 1; k < n; ++k) {
+            y1 = std::min(y1, v[k].y);
+            y2 = std::max(y2, v[k].y);
+        }
+        dirtyRows(std::max(y1, areaY1), std::min(y2, areaY2));
     }
-    if (scale > 1) {
+    if (hw) {
+        toBackend(v[0], v[1], v[2], textured, semi, raw);
+        if (quad) toBackend(v[1], v[2], v[3], textured, semi, raw);
+    } else if (scale > 1) {
         triangleHi(v[0], v[1], v[2], textured, gouraud, semi, raw);
         if (quad) triangleHi(v[1], v[2], v[3], textured, gouraud, semi, raw);
     }
@@ -815,7 +961,7 @@ void Gpu::drawLine(Vertex a, Vertex b, bool semi) {
         int x = steps ? a.x + (b.x - a.x) * i / steps : a.x;
         int y = steps ? a.y + (b.y - a.y) * i / steps : a.y;
         if (x < areaX1 || x > areaX2 || y < areaY1 || y > areaY2) continue;
-        if (scale > 1) {
+        if (scale > 1 && !hires.empty()) {
             int hr = steps ? a.r + (b.r - a.r) * i / steps : a.r, hg = steps ? a.g + (b.g - a.g) * i / steps : a.g;
             int hb = steps ? a.b + (b.b - a.b) * i / steps : a.b;
             for (int j = 0; j < scale; ++j)
@@ -849,7 +995,30 @@ void Gpu::line() {
         v.y = sext11(xy >> 16) + offY;
         pts.push_back(v);
     }
-    for (size_t k = 1; k < pts.size(); ++k) drawLine(pts[k - 1], pts[k], semi);
+    for (size_t k = 1; k < pts.size(); ++k) {
+        drawLine(pts[k - 1], pts[k], semi);
+        dirtyRows(std::min(pts[k - 1].y, pts[k].y), std::max(pts[k - 1].y, pts[k].y));
+        if (hw) {
+            // a band one native pixel wide along the segment, over the pixel centres
+            Vertex a = pts[k - 1], b = pts[k];
+            const float dx = static_cast<float>(b.x - a.x), dy = static_cast<float>(b.y - a.y);
+            const bool steep = std::abs(dy) > std::abs(dx);
+            Vertex q[4] = {a, a, b, b};
+            for (int j = 0; j < 4; ++j) {
+                q[j].hx = 0;  // positions given as floats below
+                q[j].fx = static_cast<float>(q[j].x) + 0.5f;
+                q[j].fy = static_cast<float>(q[j].y) + 0.5f;
+            }
+            const float h = 0.5f;
+            if (steep) {
+                q[0].fx -= h; q[1].fx += h; q[2].fx -= h; q[3].fx += h;
+            } else {
+                q[0].fy -= h; q[1].fy += h; q[2].fy -= h; q[3].fy += h;
+            }
+            toBackend(q[0], q[1], q[2], false, semi, false);
+            toBackend(q[1], q[2], q[3], false, semi, false);
+        }
+    }
 }
 
 void Gpu::rect() {
@@ -874,7 +1043,25 @@ void Gpu::rect() {
         case 2: w = h = 8; break;
         default: w = h = 16; break;
     }
-    if (scale > 1) rectHi(x, y, w, h, u0, v0, r, g, b, textured, semi, raw);
+    if (hw) {
+        Vertex q[4]{};
+        const int xs[4] = {x, x + w, x, x + w}, ys[4] = {y, y, y + h, y + h};
+        const int us[4] = {u0, u0 + w, u0, u0 + w}, vs[4] = {v0, v0, v0 + h, v0 + h};
+        for (int j = 0; j < 4; ++j) {
+            q[j].x = xs[j];
+            q[j].y = ys[j];
+            q[j].u = us[j];
+            q[j].v = vs[j];
+            q[j].r = r;
+            q[j].g = g;
+            q[j].b = b;
+        }
+        toBackend(q[0], q[1], q[2], textured, semi, raw);
+        toBackend(q[1], q[2], q[3], textured, semi, raw);
+    } else if (scale > 1) {
+        rectHi(x, y, w, h, u0, v0, r, g, b, textured, semi, raw);
+    }
+    dirtyRows(std::max(y, areaY1), std::min(y + h - 1, areaY2));
     u16 flat = to15(r, g, b);
     for (int py = 0; py < h; ++py) {
         int yy = y + py;
@@ -913,8 +1100,8 @@ int Gpu::commandLength(u32 word) const {
 }
 
 void Gpu::gp0(u32 word) {
-    if (recordPasses && !passes.empty() && passes.back().snapped && !passes.back().done)
-        recordWord(word, pendingPrecise ? pendingX : kNan, pendingY);
+    if (recordPasses && !passes.empty() && passes.back()->snapped && !passes.back()->done)
+        recordWord(word, pendingPrecise ? pendingX : kNan, pendingY, pendingZ);
     if (loading) {
         for (int k = 0; k < 2; ++k) {
             u16 px = static_cast<u16>(word >> (16 * k));
@@ -929,6 +1116,11 @@ void Gpu::gp0(u32 word) {
                 if (++tcy == th) {
                     loading = false;
                     videoUploaded(tx, ty, tw, th);
+                    if (hw) {
+                        dirtyRows(ty, ty + th - 1);
+                        if (ty + th > 512) dirtyRows(0, (ty + th - 1) & 511);
+                        hw->upload(tx, ty, std::min(tw, 1024 - tx), std::min(th, 512 - ty));
+                    }
                     break;
                 }
             }
@@ -951,17 +1143,18 @@ void Gpu::gp0(u32 word) {
     cmd.push_back(word);
     if (!cmdPrecise.empty() || pendingPrecise) {
         // keep the precise positions lined up with the words
-        cmdPrecise.resize(cmd.size(), {kNan, kNan});
-        if (pendingPrecise) cmdPrecise.back() = {pendingX, pendingY};
+        cmdPrecise.resize(cmd.size(), {kNan, kNan, 0});
+        if (pendingPrecise) cmdPrecise.back() = {pendingX, pendingY, pendingZ};
     }
     pendingPrecise = false;
     if (!polyline && static_cast<int>(cmd.size()) >= cmdNeed) execute();
 }
 
-void Gpu::gp0Precise(u32 word, float x, float y) {
+void Gpu::gp0Precise(u32 word, float x, float y, float z) {
     pendingPrecise = true;
     pendingX = x;
     pendingY = y;
+    pendingZ = z;
     gp0(word);
     pendingPrecise = false;
 }
@@ -983,8 +1176,23 @@ void Gpu::execute() {
                 if (!(checkMask && (d & 0x8000))) d = px | setMask;
             }
         videoInvalidate(dx, dy, w, h);
+        if (hw) {
+            dirtyRows(dy, dy + h - 1);
+            if (dy + h > 512) dirtyRows(0, (dy + h - 1) & 511);
+            // in pieces that do not wrap around the edges of video memory
+            for (int oy = 0; oy < h;) {
+                const int hh = std::min(h - oy, std::min(512 - ((sy + oy) & 511), 512 - ((dy + oy) & 511)));
+                for (int ox = 0; ox < w;) {
+                    const int ww = std::min(w - ox, std::min(1024 - ((sx + ox) & 1023), 1024 - ((dx + ox) & 1023)));
+                    hw->copy((sx + ox) & 1023, (sy + oy) & 511, (dx + ox) & 1023, (dy + oy) & 511, ww, hh);
+                    ox += ww;
+                }
+                oy += hh;
+            }
+        }
         bool srcIn = inFrameBuffer(sx, sy) && inFrameBuffer(std::min(sx + w - 1, 1023), std::min(sy + h - 1, 511));
-        if (scale > 1 && !srcIn) {
+        if (hw) {
+        } else if (scale > 1 && !srcIn) {
             // the source is a texture area that is not mirrored: scale up the result
             for (int y = 0; y < h; ++y)
                 for (int x = 0; x < w; ++x) {
@@ -1018,6 +1226,19 @@ void Gpu::execute() {
                 u16 c = to15(cmd[0] & 255, (cmd[0] >> 8) & 255, (cmd[0] >> 16) & 255);
                 int x0 = cmd[1] & 0x3F0, y0 = (cmd[1] >> 16) & 511;
                 int w = static_cast<int>(((cmd[2] & 0x3FF) + 15) & ~15u), h = (cmd[2] >> 16) & 511;
+                if (hw && w > 0 && h > 0) {
+                    dirtyRows(y0, y0 + h - 1);
+                    if (y0 + h > 512) dirtyRows(0, (y0 + h - 1) & 511);
+                    for (int oy = 0; oy < h;) {
+                        const int hh = std::min(h - oy, 512 - ((y0 + oy) & 511));
+                        for (int ox = 0; ox < w;) {
+                            const int ww = std::min(w - ox, 1024 - ((x0 + ox) & 1023));
+                            hw->fill((x0 + ox) & 1023, (y0 + oy) & 511, ww, hh, c);
+                            ox += ww;
+                        }
+                        oy += hh;
+                    }
+                }
                 for (int y = 0; y < h; ++y)
                     for (int x = 0; x < w; ++x) {
                         vram[static_cast<size_t>((y0 + y) & 511) * 1024 + ((x0 + x) & 1023)] = c;
@@ -1039,15 +1260,15 @@ void Gpu::execute() {
             case 0xE3:
                 areaX1 = cmd[0] & 1023;
                 areaY1 = (cmd[0] >> 10) & 511;
-                if (recordPasses && (passes.empty() || passes.back().x1 != areaX1 || passes.back().y1 != areaY1)) startPass();
+                if (recordPasses && (passes.empty() || passes.back()->x1 != areaX1 || passes.back()->y1 != areaY1)) startPass();
                 break;
             case 0xE4:
                 areaX2 = cmd[0] & 1023;
                 areaY2 = (cmd[0] >> 10) & 511;
                 growFrameBuffer(areaX1, areaY1, areaX2, areaY2);
-                if (recordPasses && !passes.empty() && !passes.back().snapped) {
-                    passes.back().x2 = areaX2;
-                    passes.back().y2 = areaY2;
+                if (recordPasses && !passes.empty() && !passes.back()->snapped) {
+                    current().x2 = areaX2;
+                    current().y2 = areaY2;
                 }
                 break;
             case 0xE5: offX = sext11(cmd[0]); offY = sext11(cmd[0] >> 11); break;

@@ -181,6 +181,9 @@ struct Window::Impl {
     // nudged to keep this between kAudioLow and kAudioHigh, so a slow frame
     // does not empty the queue (a crack) and clock drift does not overfill it.
     int audioLow = 4, audioHigh = 7;
+    int lateFor = 0;  // frames still to count as "behind" after the last late one
+    std::uint64_t lateCount = 0, behindCount = 0;
+    std::uint32_t recentLate = 0;  // one bit per frame, the last 32: done more than half a frame late
     int queued() const {
         int n = 0;
         for (const WAVEHDR& h : headers)
@@ -326,7 +329,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 }  // namespace
 
-Window::Window(int width, int height, bool fullscreen, int display) : impl_(new Impl) {
+Window::Window(int width, int height, bool fullscreen, int display, bool visible) : impl_(new Impl) {
     WNDCLASSW wc{};
     wc.lpfnWndProc = wndProc;
     wc.hInstance = GetModuleHandleW(nullptr);
@@ -349,7 +352,7 @@ Window::Window(int width, int height, bool fullscreen, int display) : impl_(new 
         impl_->windowed = RECT{x, y, x + w, y + h};
     }
     if (fullscreen) {
-        impl_->hwnd = CreateWindowW(wc.lpszClassName, L"FearEffectRe", WS_POPUP | WS_VISIBLE, target.x, target.y, screenW, screenH,
+        impl_->hwnd = CreateWindowW(wc.lpszClassName, L"FearEffectRe", WS_POPUP | (visible ? WS_VISIBLE : 0), target.x, target.y, screenW, screenH,
                                     nullptr, nullptr, wc.hInstance, nullptr);
     } else {
         RECT r{0, 0, width, height};
@@ -357,7 +360,7 @@ Window::Window(int width, int height, bool fullscreen, int display) : impl_(new 
         int w = r.right - r.left, h = r.bottom - r.top;
         // centred; a window larger than the screen starts at its top-left corner
         int x = target.x + std::max(0, (screenW - w) / 2), y = target.y + std::max(0, (screenH - h) / 2);
-        impl_->hwnd = CreateWindowW(wc.lpszClassName, L"FearEffectRe", WS_OVERLAPPEDWINDOW | WS_VISIBLE, x, y, w, h,
+        impl_->hwnd = CreateWindowW(wc.lpszClassName, L"FearEffectRe", WS_OVERLAPPEDWINDOW | (visible ? WS_VISIBLE : 0), x, y, w, h,
                                     nullptr, nullptr, wc.hInstance, nullptr);
     }
     SetWindowLongPtrW(impl_->hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(impl_));
@@ -577,6 +580,13 @@ void Window::pace() {
             else if (q > impl_->audioHigh) period += period / 100;
         }
         impl_->next.QuadPart += period;
+        // Behind: several frames done well after their time lately (one
+        // now and then is noise: a slow disc read, the system).
+        if (now.QuadPart > impl_->next.QuadPart) ++impl_->lateCount;
+        impl_->recentLate = (impl_->recentLate << 1) | (now.QuadPart > impl_->next.QuadPart + period / 2 ? 1u : 0u);
+        if (__builtin_popcount(impl_->recentLate) >= 3) impl_->lateFor = 90;
+        else if (impl_->lateFor > 0) --impl_->lateFor;
+        if (impl_->lateFor > 0) ++impl_->behindCount;
         // Fell behind (a slow frame): catch up gently, at most half a
         // frame each frame, instead of running frames back to back, which
         // makes movies visibly rush after every slow frame. Far behind
@@ -594,6 +604,10 @@ void Window::pace() {
         impl_->next = now;
     }
 }
+
+bool Window::behind() const { return impl_->lateFor > 0; }
+std::uint64_t Window::lateFrames() const { return impl_->lateCount; }
+std::uint64_t Window::behindFrames() const { return impl_->behindCount; }
 
 bool Window::idle() {
     if (!pump()) return false;
@@ -653,6 +667,36 @@ bool Window::present(const std::vector<std::uint8_t>& rgb, int width, int height
     impl_->drawStatusGdi(dc);
     ReleaseDC(impl_->hwnd, dc);
 
+    pace();
+    return true;
+}
+
+bool Window::presentGl(ShowFn show, void* ctx, const std::uint16_t* native, int stride, int x, int y, int width, int height) {
+    if (!pump()) return false;
+    Impl& im = *impl_;
+    if (im.widescreen) im.decide(Impl::bandsBlack16(native, stride, x, y, width, height));
+    RECT rc;
+    GetClientRect(im.hwnd, &rc);
+    const int cw = rc.right, ch = rc.bottom;
+    int w, h;
+    im.box(cw, ch, w, h);
+    glViewport(0, 0, cw, ch);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    const int vx = (cw - w) / 2, vy = (ch - h) / 2;
+    int py = y, ph = height;
+    im.crop(py, ph);
+    show(ctx, x, py, width, ph, vx, vy, w, h, false);
+    if (im.cropped) {
+        // the HUD drawn in the bands above and below the picture, laid over
+        // its top and bottom quarters with black see-through
+        const int band = height / 6, quarter = h / 4;
+        show(ctx, x, y, width, band, vx, vy + h - quarter, w, quarter, true);
+        show(ctx, x, y + height - band, width, band, vx, vy, w, quarter, true);
+    }
+    glViewport(0, 0, cw, ch);
+    im.drawStatusGl(cw, ch);
+    SwapBuffers(im.glDc);
     pace();
     return true;
 }

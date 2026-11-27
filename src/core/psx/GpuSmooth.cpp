@@ -24,7 +24,7 @@ struct Poly {
     bool is3d;               // has precise vertices (drawn from the GTE)
 };
 
-std::vector<Poly> polygons(const std::vector<u32>& w, const std::vector<std::array<float, 2>>& p, int (*length)(u32)) {
+std::vector<Poly> polygons(const std::vector<u32>& w, const std::vector<std::array<float, 3>>& p, int (*length)(u32)) {
     std::vector<Poly> out;
     size_t i = 0;
     while (i < w.size()) {
@@ -43,10 +43,11 @@ std::vector<Poly> polygons(const std::vector<u32>& w, const std::vector<std::arr
                     break;
                 }
                 q.xy[k] = j;
-                const bool hasPrecise = j < p.size() && !std::isnan(p[j][0]);
-                q.x[k] = hasPrecise ? p[j][0] : static_cast<float>(sext11(w[j]));
-                q.y[k] = hasPrecise ? p[j][1] : static_cast<float>(sext11(w[j] >> 16));
-                q.is3d = q.is3d || hasPrecise;
+                // the positions the game's own frame is drawn at (whole
+                // pixels), so a frame in between sits exactly between two of them
+                q.x[k] = static_cast<float>(sext11(w[j]));
+                q.y[k] = static_cast<float>(sext11(w[j] >> 16));
+                q.is3d = q.is3d || (j < p.size() && !std::isnan(p[j][0]));
                 ++j;
                 if (textured) {
                     if (j >= w.size()) {
@@ -110,42 +111,70 @@ void Gpu::loadRegs(const Regs& r) {
     checkMask = r.checkMask;
 }
 
-void Gpu::recordWord(u32 word, float x, float y) {
-    Pass& pass = passes.back();
+void Gpu::recordWord(u32 word, float x, float y, float z) {
+    Pass& pass = current();
     if (pass.words.size() > 4000000) return;  // runaway: a pass this long is not a picture
     pass.words.push_back(word);
-    pass.precise.push_back({x, y});
+    pass.precise.push_back({x, y, z});
 }
 
 void Gpu::startPass() {
-    if (!passes.empty()) passes.back().done = true;
+    if (!passes.empty()) current().done = true;
+    // Passes are shared with the thread drawing in-between frames, so an old
+    // one is let go (not reused) when it drops out.
     while (passes.size() >= kPassesKept) passes.pop_front();
-    Pass pass;
-    pass.x1 = areaX1;
-    pass.y1 = areaY1;
-    pass.x2 = areaX2;
-    pass.y2 = areaY2;
+    auto pass = std::make_shared<Pass>();
+    pass->x1 = areaX1;
+    pass->y1 = areaY1;
+    pass->x2 = areaX2;
+    pass->y2 = areaY2;
     passes.push_back(std::move(pass));
 }
 
-bool Gpu::renderBetween(Gpu& source, float t, int& matched) {
-    matched = 0;
-    if (source.scale != scale || scale < 2) return false;
-    // The picture on screen (B) is the newest finished one drawn where the
-    // display is; the one before it (A) is the pass just before.
-    const Pass* b = nullptr;
-    const Pass* a = nullptr;
-    for (size_t i = source.passes.size(); i-- > 0;) {
-        const Pass& p = source.passes[i];
-        if (!p.done || !p.snapped) continue;
+bool Gpu::newestPair(std::shared_ptr<const Pass>& a, std::shared_ptr<const Pass>& b) const {
+    a.reset();
+    b.reset();
+    for (size_t i = passes.size(); i-- > 0;) {
+        const auto& p = passes[i];
+        if (!p->done || !p->snapped) continue;
         if (!b) {
-            if (source.dispX >= p.x1 && source.dispX <= p.x2 && source.dispY >= p.y1 && source.dispY <= p.y2) b = &p;
+            b = p;
             continue;
         }
-        a = &p;
-        break;
+        a = p;
+        return true;
     }
-    if (!a || !b) return false;
+    return false;
+}
+
+bool Gpu::shownPair(std::shared_ptr<const Pass>& a, std::shared_ptr<const Pass>& b) const {
+    a.reset();
+    b.reset();
+    for (size_t i = passes.size(); i-- > 0;) {
+        const auto& p = passes[i];
+        if (!p->done || !p->snapped) continue;
+        if (!b) {
+            if (dispX >= p->x1 && dispX <= p->x2 && dispY >= p->y1 && dispY <= p->y2) b = p;
+            continue;
+        }
+        a = p;
+        return true;
+    }
+    return false;
+}
+
+void Gpu::showLike(const Gpu& source) {
+    dispX = source.dispX;
+    dispY = source.dispY;
+    displayMode = source.displayMode;
+    displayEnabled = source.displayEnabled;
+    hRange = source.hRange;
+    vRange = source.vRange;
+}
+
+bool Gpu::drawBetween(const Pass& a, const Pass& b, float t, const std::vector<u16>& textures, int& matched) {
+    matched = 0;
+    if (scale < 2) return false;
 
     // ---- which polygon of A each 3D polygon of B is ---------------------------
     static int (*length)(u32) = [](u32 word) {
@@ -161,13 +190,13 @@ bool Gpu::renderBetween(Gpu& source, float t, int& matched) {
         if (op == 0x02) return 3;
         return 1;
     };
-    const std::vector<Poly> pa = polygons(a->words, a->precise, length);
-    const std::vector<Poly> pb = polygons(b->words, b->precise, length);
+    const std::vector<Poly> pa = polygons(a.words, a.precise, length);
+    const std::vector<Poly> pb = polygons(b.words, b.precise, length);
     std::unordered_multimap<u32, size_t> bySig;
     for (size_t i = 0; i < pa.size(); ++i)
         if (pa[i].is3d) bySig.emplace(pa[i].sig, i);
     std::vector<bool> used(pa.size(), false);
-    std::vector<std::array<float, 2>> moved(b->words.size(), {kNan, kNan});  // new position per vertex word
+    std::vector<std::array<float, 3>> moved(b.words.size(), {kNan, kNan, 0});  // new position (and depth) per vertex word
     int total = 0, found = 0;
     for (const Poly& q : pb) {
         if (!q.is3d) continue;
@@ -190,44 +219,23 @@ bool Gpu::renderBetween(Gpu& source, float t, int& matched) {
         ++found;
         const Poly& r = pa[best];
         for (int k = 0; k < q.n; ++k)
-            moved[q.xy[k]] = {r.x[k] + (q.x[k] - r.x[k]) * t, r.y[k] + (q.y[k] - r.y[k]) * t};
+            moved[q.xy[k]] = {r.x[k] + (q.x[k] - r.x[k]) * t, r.y[k] + (q.y[k] - r.y[k]) * t, b.precise[q.xy[k]][2]};
     }
     matched = total ? found * 100 / total : 100;
     if (total == 0 || matched < 60) return false;  // a cut, or nothing that moves
 
-    // ---- draw B again, from its snapshot, with the matched vertices moved -----
-    vram = source.vram;
-    loadRegs(b->regs);
-    growFrameBuffer(b->x1, b->y1, b->x2, b->y2);
-    {
-        const int S = scale, x1 = std::max(b->x1, 0), y1 = std::max(b->y1, 0);
-        const int x2 = std::min(b->x2, 1023), y2 = std::min(b->y2, 511);
-        const size_t w = static_cast<size_t>(x2 - x1 + 1) * S, stride = static_cast<size_t>(1024) * S;
-        if (b->pixels.size() != w * static_cast<size_t>(y2 - y1 + 1) * S) return false;
-        for (int y = y1 * S; y < (y2 + 1) * S; ++y)
-            std::copy_n(&b->pixels[static_cast<size_t>(y - y1 * S) * w], w, &hires[static_cast<size_t>(y) * stride + static_cast<size_t>(x1) * S]);
-    }
-    dispX = source.dispX;
-    dispY = source.dispY;
-    displayMode = source.displayMode;
-    displayEnabled = source.displayEnabled;
-    hRange = source.hRange;
-    vRange = source.vRange;
+    // ---- draw B again over its snapshot, with the matched vertices moved ------
+    vram = textures;
+    loadRegs(b.regs);
     cmd.clear();
     cmdPrecise.clear();
     loading = storing = polyline = false;
     preciseCache.clear();
-    // the enlarged movie pictures are borrowed, not copied
-    std::swap(video, source.video);
-    std::swap(videoState, source.videoState);
-    for (size_t i = 0; i < b->words.size(); ++i) {
+    for (size_t i = 0; i < b.words.size(); ++i) {
         const auto& m = moved[i];
-        if (!std::isnan(m[0])) gp0Precise(b->words[i], m[0], m[1]);
-        else if (!std::isnan(b->precise[i][0])) gp0Precise(b->words[i], b->precise[i][0], b->precise[i][1]);
-        else gp0(b->words[i]);
+        if (!std::isnan(m[0])) gp0Precise(b.words[i], m[0], m[1], m[2]);
+        else gp0(b.words[i]);
     }
-    std::swap(video, source.video);
-    std::swap(videoState, source.videoState);
     return true;
 }
 

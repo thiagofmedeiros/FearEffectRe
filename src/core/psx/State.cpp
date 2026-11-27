@@ -181,6 +181,7 @@ void Gpu::state(StateIO& io) {
     videoBreak = true;
     passes.clear();        // pictures recorded before the load (60 fps) do not lead to this one
     preciseCache.clear();
+    snapshotHeld.clear();
 }
 
 void Mdec::state(StateIO& io, Machine& m) {

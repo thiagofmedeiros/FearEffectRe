@@ -18,7 +18,7 @@ public:
     // Client area of width x height pixels, or a borderless window covering
     // the screen. The picture is scaled to the largest 4:3 area that fits.
     // `display` is an index into app::listDisplays().
-    Window(int width, int height, bool fullscreen, int display = 0);
+    Window(int width, int height, bool fullscreen, int display = 0, bool visible = true);
     ~Window();
 
     // Presents one frame and waits for the next frame time. Returns false
@@ -27,6 +27,12 @@ public:
     // Same, straight from a 15-bit frame buffer (red in the low bits): the
     // rectangle x,y,width,height of an image `stride` pixels wide.
     bool present(const std::uint16_t* pixels, int stride, int x, int y, int width, int height);
+    // Same, for a picture drawn on the graphics card: `show` draws a native
+    // rectangle of it into a viewport (window pixels, origin bottom left),
+    // black see-through when `key`; `native` is the same rectangle at the
+    // console's resolution (to tell gameplay from menus for widescreen).
+    using ShowFn = void (*)(void* ctx, int x, int y, int w, int h, int vx, int vy, int vw, int vh, bool key);
+    bool presentGl(ShowFn show, void* ctx, const std::uint16_t* native, int stride, int x, int y, int width, int height);
     // Pad buttons held right now, one bit per button (1 = pressed), in the
     // PlayStation's bit order.
     std::uint16_t buttons() const;
@@ -56,6 +62,12 @@ public:
     // A line of text shown over the picture for a few seconds.
     void status(const std::string& text);
     void toggleFullscreen();
+    // True while frames have been finishing late (within the last second or
+    // so): the program cannot keep up, and optional work (60 fps in-between
+    // frames) should wait, or the sound runs dry.
+    bool behind() const;
+    std::uint64_t lateFrames() const;    // frames that were done after their time
+    std::uint64_t behindFrames() const;  // frames during which behind() was true
 
 private:
     bool pump();

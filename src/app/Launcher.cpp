@@ -56,12 +56,12 @@ std::vector<Display> listDisplays() {
 
 namespace {
 
-enum : int { kIdPath = 101, kIdBrowse, kIdResolution, kIdFullscreen, kIdPlay, kIdQuit, kIdDisplay, kIdVideo, kIdBuildCache, kIdModern, kIdWidescreen, kIdHealth, kIdAmmo, kIdControls, kIdCheats, kIdPrecise, kIdSmooth };
+enum : int { kIdPath = 101, kIdBrowse, kIdResolution, kIdFullscreen, kIdPlay, kIdQuit, kIdDisplay, kIdVideo, kIdBuildCache, kIdModern, kIdWidescreen, kIdHealth, kIdAmmo, kIdControls, kIdCheats, kIdSmooth };
 
 struct State {
     HWND path = nullptr, combo = nullptr, full = nullptr, display = nullptr;
     HWND video = nullptr, modern = nullptr, widescreen = nullptr, health = nullptr, ammo = nullptr;
-    HWND moreCheats = nullptr, precise = nullptr, smooth = nullptr;
+    HWND moreCheats = nullptr, smooth = nullptr;
     bool play = false, done = false;
 };
 
@@ -270,7 +270,6 @@ bool runLauncher(LaunchSettings& settings) {
     if (vid < 0 || vid > 3) vid = 1;
     bool modern = GetPrivateProfileIntW(L"launcher", L"modern", settings.modern ? 1 : 0, ini.c_str()) != 0;
     bool wide = GetPrivateProfileIntW(L"launcher", L"widescreen", settings.widescreen ? 1 : 0, ini.c_str()) != 0;
-    bool precise = GetPrivateProfileIntW(L"launcher", L"precise", settings.precise ? 1 : 0, ini.c_str()) != 0;
     bool smooth = GetPrivateProfileIntW(L"launcher", L"smooth", settings.smooth ? 1 : 0, ini.c_str()) != 0;
     bool health = GetPrivateProfileIntW(L"cheats", L"health", settings.infiniteHealth ? 1 : 0, ini.c_str()) != 0;
     bool ammo = GetPrivateProfileIntW(L"cheats", L"ammo", settings.infiniteAmmo ? 1 : 0, ini.c_str()) != 0;
@@ -334,9 +333,7 @@ bool runLauncher(LaunchSettings& settings) {
     SendMessageW(st.modern, BM_SETCHECK, modern ? BST_CHECKED : BST_UNCHECKED, 0);
     st.widescreen = make(L"BUTTON", L"Widescreen (gameplay and movies without the black bands)",
                          WS_TABSTOP | BS_AUTOCHECKBOX, 16, 168 + extra, 488, 20, kIdWidescreen);
-    st.precise = make(L"BUTTON", L"Precise 3D models", WS_TABSTOP | BS_AUTOCHECKBOX, 16, 194 + extra, 230, 20, kIdPrecise);
-    SendMessageW(st.precise, BM_SETCHECK, precise ? BST_CHECKED : BST_UNCHECKED, 0);
-    st.smooth = make(L"BUTTON", L"Smooth 60 fps", WS_TABSTOP | BS_AUTOCHECKBOX, 250, 194 + extra, 254, 20, kIdSmooth);
+    st.smooth = make(L"BUTTON", L"Smooth 60 fps (frames drawn in between the game's)", WS_TABSTOP | BS_AUTOCHECKBOX, 16, 194 + extra, 488, 20, kIdSmooth);
     SendMessageW(st.smooth, BM_SETCHECK, smooth ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(st.widescreen, BM_SETCHECK, wide ? BST_CHECKED : BST_UNCHECKED, 0);
     make(L"STATIC", L"Cheats:", 0, 16, 222 + extra, 80, 18, 0);
@@ -389,9 +386,7 @@ bool runLauncher(LaunchSettings& settings) {
         settings.modern = SendMessageW(st.modern, BM_GETCHECK, 0, 0) == BST_CHECKED;
         WritePrivateProfileStringW(L"launcher", L"modern", settings.modern ? L"1" : L"0", ini.c_str());
         settings.widescreen = SendMessageW(st.widescreen, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        settings.precise = SendMessageW(st.precise, BM_GETCHECK, 0, 0) == BST_CHECKED;
         settings.smooth = SendMessageW(st.smooth, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        WritePrivateProfileStringW(L"launcher", L"precise", settings.precise ? L"1" : L"0", ini.c_str());
         WritePrivateProfileStringW(L"launcher", L"smooth", settings.smooth ? L"1" : L"0", ini.c_str());
         WritePrivateProfileStringW(L"launcher", L"widescreen", settings.widescreen ? L"1" : L"0", ini.c_str());
         settings.infiniteHealth = SendMessageW(st.health, BM_GETCHECK, 0, 0) == BST_CHECKED;

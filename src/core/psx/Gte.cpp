@@ -99,6 +99,7 @@ struct Gte {
             for (int i = 0; i < 2; ++i) {
                 m->pgxpSxy[i][0] = m->pgxpSxy[i + 1][0];
                 m->pgxpSxy[i][1] = m->pgxpSxy[i + 1][1];
+                m->pgxpSxy[i][2] = m->pgxpSxy[i + 1][2];
                 m->pgxpSxyValid[i] = m->pgxpSxyValid[i + 1];
             }
             m->pgxpSxyValid[2] = false;
@@ -175,6 +176,7 @@ struct Gte {
                 if (std::abs(fx - (sx + 0.5)) < 1.0 && std::abs(fy - (sy + 0.5)) < 1.0) {
                     m->pgxpSxy[2][0] = static_cast<float>(fx);
                     m->pgxpSxy[2][1] = static_cast<float>(fy);
+                    m->pgxpSxy[2][2] = static_cast<float>(z);
                     m->pgxpSxyValid[2] = true;
                 }
             }
@@ -369,6 +371,7 @@ void gteMtc2(Cpu& c, u32 reg, u32 value) {
             for (int i = 0; i < 2; ++i) {
                 c.m->pgxpSxy[i][0] = c.m->pgxpSxy[i + 1][0];
                 c.m->pgxpSxy[i][1] = c.m->pgxpSxy[i + 1][1];
+                c.m->pgxpSxy[i][2] = c.m->pgxpSxy[i + 1][2];
                 c.m->pgxpSxyValid[i] = c.m->pgxpSxyValid[i + 1];
             }
             c.m->pgxpSxyValid[2] = false;
@@ -436,6 +439,7 @@ void gteLwc2(Cpu& c, u32 addr, u32 reg) {
         const int i = reg == 15 ? 2 : static_cast<int>(reg) - 12;
         m->pgxpSxy[i][0] = e->x;
         m->pgxpSxy[i][1] = e->y;
+        m->pgxpSxy[i][2] = e->z;
         m->pgxpSxyValid[i] = true;
     }
 }
@@ -454,6 +458,7 @@ void gteSwc2(Cpu& c, u32 addr, u32 reg) {
         e.frame = static_cast<u32>(m->frame);
         e.x = m->pgxpSxy[i][0];
         e.y = m->pgxpSxy[i][1];
+        e.z = m->pgxpSxy[i][2];
     } else {
         e = Machine::PreciseWord{};
     }

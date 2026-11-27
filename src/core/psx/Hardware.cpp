@@ -221,7 +221,7 @@ void Machine::runDma(int ch) {
                         std::memcpy(&w, ram.get() + at, 4);
                         if (const PreciseWord* p = pgxp ? preciseAt(at, w) : nullptr) {
                             ++pgxpUsed;
-                            gpu->gp0Precise(w, p->x, p->y);
+                            gpu->gp0Precise(w, p->x, p->y, p->z);
                         } else {
                             gpu->gp0(w);
                         }

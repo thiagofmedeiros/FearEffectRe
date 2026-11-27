@@ -3,13 +3,16 @@
 // hardware in edge rules and dithering.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <vector>
 
 #include "psx/Machine.h"
+#include "psx/HiresBackend.h"
 #include "psx/VideoUpscaler.h"
 
 namespace fe {
@@ -31,15 +34,22 @@ struct Gpu {
     // background slices) are enlarged by it, and 15-bit textures drawn from
     // them are sampled from the enlarged copy instead of video memory.
     void setUpscaler(std::shared_ptr<VideoUpscaler> u);
+    // Draw the high-resolution picture with `backend` (on the graphics card)
+    // instead of on the CPU: the CPU copy `hires` is not kept then, and
+    // frame() only gives the picture at the console's resolution.
+    void setBackend(HiresBackend* backend);
+    HiresBackend* hw = nullptr;
     // The displayed part of the (scaled) frame buffer for 15-bit display
     // modes: `pixels` has `stride` pixels per row. Returns false in 24-bit
     // modes, where display() must be used.
     bool frame(const u16*& pixels, int& stride, int& x, int& y, int& width, int& height) const;
+    // The displayed rectangle in native pixels; false in 24-bit modes.
+    bool displayArea(int& x, int& y, int& width, int& height) const;
 
     void gp0(u32 word);
     // A vertex word whose precise screen position (before rounding) is known:
     // the high-resolution copy places the vertex there.
-    void gp0Precise(u32 word, float x, float y);
+    void gp0Precise(u32 word, float x, float y, float z = 0);
     u64 preciseVertices = 0, vertices = 0;
     // Set by the machine every frame: the precise positions of this frame and
     // the last are reused for vertices drawn at the same whole-pixel point.
@@ -50,10 +60,10 @@ struct Gpu {
     // `recordPasses` on, each picture it draws (a "pass": everything drawn
     // while the drawing area is one buffer) is kept: the buffer as it was
     // just before the first 3D polygon (background and 2D are already in it),
-    // then every command after that, with the vertices' precise positions.
-    // renderBetween(), called on a second Gpu, draws the newest finished
-    // picture again with each 3D polygon moved part of the way back towards
-    // the same polygon in the picture before: the frame in between.
+    // copied into the second Gpu's picture at the same place, then every
+    // command after that, with the vertices' precise positions. The second
+    // Gpu draws the picture again with each 3D polygon moved part of the way
+    // back towards the same polygon in the picture before: the frame in between.
     struct Regs {
         u32 texpage;
         int tpx, tpy, blend, depth, clutX, clutY;
@@ -65,20 +75,37 @@ struct Gpu {
     struct Pass {
         int x1 = 0, y1 = 0, x2 = -1, y2 = -1;  // drawing area, native pixels
         bool snapped = false, done = false;
-        std::vector<u16> pixels;                // high-resolution drawing area at the snapshot
+        u64 serial = 0;                         // which snapshot (it is kept in the second Gpu's picture)
         Regs regs{};
         std::vector<u32> words;                 // commands from the snapshot on
-        std::vector<std::array<float, 2>> precise;  // per word: precise position, or NaN
+        std::vector<std::array<float, 3>> precise;  // per word: precise position and depth, or NaN
     };
     bool recordPasses = false;
-    std::deque<Pass> passes;  // the last few, oldest first
-    // On the second Gpu: draws the frame `t` (0..1) of the way from the
-    // picture before the one `source` shows to the one it shows. False when
-    // there is nothing to draw it from or the two pictures do not belong
-    // together (a cut: too few polygons match); `matched` is the share of
-    // 3D polygons that matched, in percent.
-    bool renderBetween(Gpu& source, float t, int& matched);
-    bool ghost = false;  // this Gpu draws in-between frames: high resolution only, no movie tracking  // polygon vertices drawn, and how many at a precise position
+    Gpu* snapshotTo = nullptr;                  // the Gpu that draws the in-between frames
+    std::function<void(int)> beforeSnapshot;    // called before a snapshot (of the area at this top line) is written into it
+    u64 passSerial = 0;
+    // which snapshot the second Gpu's picture holds, per drawing area (by its top line); main thread only
+    std::unordered_map<int, u64> snapshotHeld;
+    std::deque<std::shared_ptr<const Pass>> passes;  // the last few, oldest first (the newest is being drawn)
+    // The newest finished picture with a snapshot, and the one before it.
+    bool newestPair(std::shared_ptr<const Pass>& a, std::shared_ptr<const Pass>& b) const;
+    // The picture being shown (the newest finished one drawn where the display is), and the one before it.
+    bool shownPair(std::shared_ptr<const Pass>& a, std::shared_ptr<const Pass>& b) const;
+    // On the second Gpu, from any one thread: draws `b` again from its
+    // snapshot (which must still be in this Gpu's picture) with each 3D
+    // polygon moved `t` (0..1) of the way from where it is in `a`. `vram` is
+    // a copy of video memory (textures). False when the two pictures do not
+    // belong together (a cut: too few polygons match); `matched` is the share
+    // of 3D polygons that matched, in percent.
+    bool drawBetween(const Pass& a, const Pass& b, float t, const std::vector<u16>& vram, int& matched);
+    // The second Gpu shows what the main one shows (display position and mode).
+    void showLike(const Gpu& source);
+    bool ghost = false;  // this Gpu draws in-between frames: high resolution only, no movie tracking, own workers
+    // Draw at the positions given with gp0Precise() instead of the whole
+    // pixels in the commands (the frames in between: halfway positions).
+    // Otherwise those positions only tell which polygons are 3D.
+    bool renderPrecise = false;
+    const Gpu* videoFrom = nullptr;  // where it reads the enlarged movie pictures (the main Gpu's)
     void gp1(u32 word);
     u32 read();
     u32 status(const Machine& m) const;
@@ -100,13 +127,25 @@ private:
         int r, g, b;
         int u, v;
         int hx = kNoPrecise, hy = 0;  // position in the high-resolution copy, when known precisely
+        float fx = 0, fy = 0, fz = 0;  // the precise position (native pixels, offset included) and depth (0 unknown)
     };
+    void toBackend(const Vertex& a, const Vertex& b, const Vertex& c, bool textured, bool semi, bool raw);
+    HwState hwState(bool textured, bool semi, bool raw) const;
+    void dirtyRows(int y1, int y2) {
+        if (hw) hw->dirty(std::clamp(y1, 0, 511), std::clamp(y2, 0, 511));
+    }
     static constexpr int kNoPrecise = -0x40000000;
     int commandLength(u32 word) const;
     Regs saveRegs() const;
     void loadRegs(const Regs& r);
-    void recordWord(u32 word, float x, float y);
+    void recordWord(u32 word, float x, float y, float z);
+    Pass& current() { return const_cast<Pass&>(*passes.back()); }
+    const std::vector<u8>& videoStates() const { return videoFrom ? videoFrom->videoState : videoState; }
+    const std::vector<u16>& videoPixels() const { return videoFrom ? videoFrom->video : video; }
     void startPass();
+    // Copies a native rectangle of the high-resolution picture to the same
+    // place in another Gpu's, on the worker threads.
+    void copyHiresTo(Gpu& to, int x1, int y1, int x2, int y2) const;
     void execute();
     void polygon();
     void line();
@@ -151,14 +190,14 @@ private:
 
     std::vector<u32> cmd;
     // per word of `cmd`: its precise position (x, y), NaN when there is none
-    std::vector<std::array<float, 2>> cmdPrecise;
+    std::vector<std::array<float, 3>> cmdPrecise;  // x, y, depth (0 unknown)
     struct CachedVertex {
-        int x, y;
+        float x, y, z;  // native pixels, offset included
         u32 frame;
     };
     std::unordered_map<u32, CachedVertex> preciseCache;  // native (x, y) -> high-resolution position
     bool pendingPrecise = false;  // the word being added comes with a precise position
-    float pendingX = 0, pendingY = 0;
+    float pendingX = 0, pendingY = 0, pendingZ = 0;
     static constexpr float kNan = __builtin_nanf("");
     int cmdNeed = 0;
     bool polyline = false;

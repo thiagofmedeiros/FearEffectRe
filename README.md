@@ -25,6 +25,16 @@ drawn at a multiple of that which fills your screen: 3x for 720p, 5x for 1080p, 
 
 *Left: the original 240-line picture, enlarged. Right: the same frame drawn at 5x.*
 
+### Drawn on the graphics card
+
+The high-resolution picture is drawn with OpenGL 3.3 on the graphics card (after the design of
+project-helix's renderer): video memory at the render scale is a framebuffer, the game's 4- and
+8-bit textures are read through their palettes in a shader, and 15-bit textures (movies,
+backgrounds, AI-enlarged pictures) are read from the high-resolution copy so they keep their
+detail. The picture the game itself sees is still drawn by the CPU, at the console's resolution.
+Without OpenGL 3.3, or with `--software-renderer`, everything is drawn
+on the CPU as before (much slower at 4K).
+
 ### Widescreen
 
 The game is already a widescreen game: gameplay and movies are a 2:1 picture with black bands
@@ -108,24 +118,10 @@ A few cheats change the game's code rather than its data (Infinite Ammo, Stop Ti
 The recompiled code never reads the game's instructions back from memory, so the functions
 they change run in the interpreter instead while the cheat is on, which makes them slower.
 
-### Precise 3D models
-
-The PlayStation rounds every corner of a 3D model to a whole pixel of its 320x240 picture, so
-models wobble and shimmer as they move; drawn at a higher resolution, the rounding shows even
-more. With **Precise 3D models** (`--precise`) the corners are placed where they really are in
-the high-resolution picture. The game itself sees nothing different.
-
-It works like PGXP in other emulators: when the geometry engine projects a point, the exact
-position is kept next to the rounded one; when the game stores that point to memory and the
-graphics chip later reads that same word, the exact position goes with it. A model is built
-from parts transformed one by one, and where two parts meet, the same point comes out slightly
-differently from each; points that round to the same pixel in a frame therefore share one
-exact position, so the parts stay joined.
-
 ### Smooth 60 fps
 
 The game draws a new picture every second frame: 30 a second. With **Smooth 60 fps**
-(`--smooth`, which also turns on precise 3D models) a picture is drawn in between each two of
+(`--smooth`) a picture is drawn in between each two of
 the game's, with every 3D polygon halfway between where it was in the one before and where it
 is in the next. Each picture the game draws is recorded: the frame buffer as it is just before
 the first 3D polygon (the background and the 2D parts are already there), then every drawing

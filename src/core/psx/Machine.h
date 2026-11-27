@@ -172,9 +172,10 @@ struct Machine {
         u32 word = 0;      // the value stored: the entry is used only while RAM still holds it
         u32 frame = 0;     // when (entries older than two frames are stale)
         float x = 0, y = 0;
+        float z = 0;       // depth (for perspective-correct textures), 0 if unknown
     };
     bool pgxp = false;
-    float pgxpSxy[3][2]{};     // precise SXY0..2, next to the GTE's FIFO
+    float pgxpSxy[3][3]{};     // precise SXY0..2 (x, y, depth), next to the GTE's FIFO
     bool pgxpSxyValid[3]{};
     std::vector<PreciseWord> pgxpMem;  // per RAM word, then per scratchpad word; allocated when pgxp is turned on
     static constexpr size_t kPgxpWords = kRamSize / 4 + 0x400 / 4;
